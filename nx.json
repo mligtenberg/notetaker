@@ -1,0 +1,34 @@
+{
+  "installation": {
+    "version": "22.6.5"
+  },
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "analytics": false,
+  "plugins": [
+    {
+      "plugin": "@nx/js/typescript",
+      "options": {
+        "typecheck": {
+          "targetName": "typecheck"
+        },
+        "build": {
+          "targetName": "build",
+          "configName": "tsconfig.lib.json",
+          "buildDepsName": "build-deps",
+          "watchDepsName": "watch-deps"
+        }
+      }
+    }
+  ],
+  "generators": {
+    "*": {
+      "useProjectJson": false
+    },
+    "@nx/react:library": {
+      "useProjectJson": false
+    },
+    "@nx/js:library": {
+      "useProjectJson": false
+    }
+  }
+}
