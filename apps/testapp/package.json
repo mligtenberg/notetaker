@@ -1,5 +1,12 @@
 {
   "name": "@notetaker/testapp",
   "version": "0.0.1",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@notetaker/audio-recorder": "workspace:*",
+    "@notetaker/engine": "workspace:*",
+    "@notetaker/filesystem": "workspace:*",
+    "@notetaker/model-manager": "workspace:*"
+  }
 }

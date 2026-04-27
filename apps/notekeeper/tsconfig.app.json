@@ -4,7 +4,7 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo",
     "jsx": "react-jsx",
-    "lib": ["dom", "dom.iterable", "es2022"],
+    "lib": ["dom"],
     "types": [
       "node",
       "@nx/react/typings/cssmodule.d.ts",
@@ -27,19 +27,5 @@
     "src/**/*.spec.jsx",
     "src/**/*.test.jsx"
   ],
-  "include": ["src/**/*.js", "src/**/*.jsx", "src/**/*.ts", "src/**/*.tsx"],
-  "references": [
-    {
-      "path": "../../packages/filesystem/tsconfig.lib.json"
-    },
-    {
-      "path": "../../packages/audio-recorder/tsconfig.lib.json"
-    },
-    {
-      "path": "../../packages/model-manager/tsconfig.lib.json"
-    },
-    {
-      "path": "../../packages/engine/tsconfig.lib.json"
-    }
-  ]
+  "include": ["src/**/*.js", "src/**/*.jsx", "src/**/*.ts", "src/**/*.tsx"]
 }
