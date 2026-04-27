@@ -16,14 +16,27 @@
   },
   "packageManager": "pnpm@10.30.3",
   "devDependencies": {
+    "@nx/devkit": "22.6.5",
     "@nx/js": "22.6.5",
+    "@nx/playwright": "22.6.5",
     "@nx/react": "22.6.5",
+    "@nx/vite": "22.6.5",
+    "@nx/web": "22.6.5",
+    "@playwright/test": "^1.36.0",
     "@swc-node/register": "~1.11.1",
     "@swc/core": "~1.15.5",
     "@swc/helpers": "~0.5.18",
     "@types/node": "20.19.9",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "@vitest/ui": "~4.1.0",
+    "jiti": "2.4.2",
+    "jsdom": "~22.1.0",
     "prettier": "~3.6.2",
     "tslib": "^2.3.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vite": "^8.0.0",
+    "vitest": "~4.1.0"
   }
 }
