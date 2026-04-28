@@ -1,15 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { load_audio, pipeline } from '@huggingface/transformers';
-import { AudioRecorder, type AudioRecordingResult } from '@notetaker/audio-recorder';
 import {
-  Engine,
-  type Meeting,
+  AudioRecorder,
+  type AudioRecordingResult,
+} from '@notetaker/audio-recorder';
+import {
+  type EngineProgressEvent,
+  type EngineStage,
   type MeetingNotes,
-  type SpeakerDiarizationEngine,
-  type SpeakerNamingInput,
-  type SpeakerNamingModel,
-  type SpeakerNameGuess,
-  type TranscriptionEngine,
   type Transcript,
 } from '@notetaker/engine';
 import { FileSystem } from '@notetaker/filesystem';
@@ -18,6 +15,11 @@ import {
   type ManagedModel,
   type ModelVersionManifestEntry,
 } from '@notetaker/model-manager';
+import EngineWorker from './engine.worker.ts?worker';
+import type {
+  EngineWorkerRequest,
+  EngineWorkerResponse,
+} from './engine.worker';
 import styles from './app.module.css';
 
 interface StoredAudioFile {
@@ -29,11 +31,24 @@ interface StoredAudioFile {
   fileHandle: FileSystemFileHandle;
 }
 
+interface LiveTranscriptSegment {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
-type AppPage = 'models' | 'recordings' | 'engine';
+type AppPage = 'models' | 'recordings' | 'transcription' | 'engine';
+type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
+type WhisperQuantization = 'fp32';
 type IterableDirectoryHandle = FileSystemDirectoryHandle & {
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+};
+type NavigatorWithWebGpu = Navigator & {
+  gpu?: {
+    requestAdapter(): Promise<unknown>;
+  };
 };
 
 interface ModelDownloadTarget {
@@ -66,6 +81,7 @@ interface DirectModelFile {
   path: string;
   url: string;
   type: string;
+  size: number;
 }
 
 interface DirectModelDownload {
@@ -87,23 +103,20 @@ interface DownloadProgressState {
 }
 
 type ModelSearchStates = Record<ManagedModel, ModelSearchState>;
-type WhisperTranscriber = (
-  audio: Float32Array,
-  options?: {
-    chunk_length_s?: number;
-    return_timestamps?: boolean;
-    task?: string;
-  },
-) => Promise<{
-  text: string;
-  chunks?: { text: string; timestamp: [number, number] }[];
-}>;
+type EngineModelSelections = Record<ManagedModel, string>;
+
+const EMPTY_ENGINE_MODEL_SELECTIONS: EngineModelSelections = {
+  whisper: '',
+  pyannote: '',
+  gemma4: '',
+};
 
 const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
   {
     model: 'whisper',
     label: 'Whisper',
-    description: 'Transcription model. Searches Whisper and Faster-Whisper repositories.',
+    description:
+      'Transcription model. Searches Whisper and Faster-Whisper repositories.',
     defaultSearch: 'whisper',
   },
   {
@@ -115,41 +128,126 @@ const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
   {
     model: 'gemma4',
     label: 'Gemma 4',
-    description: 'Speaker naming model. Filters E2B, E4B, 31B, 26B, A4B with BF16, SFP8, or Q4_0.',
+    description:
+      'Speaker naming model. Filters E2B, E4B, 31B, 26B, A4B with BF16, SFP8, or Q4_0.',
     defaultSearch: 'gemma',
   },
 ];
 
 const GEMMA_SIZE_LABELS = ['e2b', 'e4b', '31b', '26b', 'a4b'] as const;
 const GEMMA_QUANT_LABELS = ['bf16', 'sfp8', 'q4_0'] as const;
-const MODEL_FILE_EXTENSIONS = ['.safetensors', '.gguf', '.onnx', '.bin', '.pt', '.pth'] as const;
+const MODEL_FILE_EXTENSIONS = [
+  '.safetensors',
+  '.gguf',
+  '.onnx',
+  '.bin',
+  '.pt',
+  '.pth',
+] as const;
 
 const WHISPER_ONNX_DOWNLOADS: DirectModelDownload[] = [
-  createWhisperOnnxDownload('Xenova/whisper-tiny', 'Tiny ONNX', 'Fastest browser/local test model.'),
-  createWhisperOnnxDownload('Xenova/whisper-base', 'Base ONNX', 'Good default for local prototype runs.'),
-  createWhisperOnnxDownload('Xenova/whisper-small', 'Small ONNX', 'Better quality with a larger download.'),
+  createWhisperOnnxDownload(
+    'onnx-community/whisper-tiny',
+    'Tiny ONNX',
+    'Current transformers.js ONNX tiny model.',
+    {
+      'added_tokens.json': 34604,
+      'config.json': 2243,
+      'generation_config.json': 3772,
+      'merges.txt': 493869,
+      'normalizer.json': 52666,
+      'preprocessor_config.json': 339,
+      'quantize_config.json': 10126,
+      'special_tokens_map.json': 2194,
+      'tokenizer.json': 2480466,
+      'tokenizer_config.json': 282683,
+      'vocab.json': 1036584,
+      'onnx/encoder_model.onnx': 32904992,
+      'onnx/decoder_model_merged.onnx': 118553827,
+    },
+  ),
+  createWhisperOnnxDownload(
+    'onnx-community/whisper-base',
+    'Base ONNX',
+    'Current transformers.js ONNX base model.',
+    {
+      'added_tokens.json': 34604,
+      'config.json': 2243,
+      'generation_config.json': 3832,
+      'merges.txt': 493869,
+      'normalizer.json': 52666,
+      'preprocessor_config.json': 339,
+      'quantize_config.json': 10126,
+      'special_tokens_map.json': 2194,
+      'tokenizer.json': 2480466,
+      'tokenizer_config.json': 282682,
+      'vocab.json': 1036584,
+      'onnx/encoder_model.onnx': 82468078,
+      'onnx/decoder_model_merged.onnx': 208521528,
+    },
+  ),
+  createWhisperOnnxDownload(
+    'onnx-community/whisper-small',
+    'Small ONNX',
+    'Current transformers.js ONNX small model.',
+    {
+      'added_tokens.json': 34604,
+      'config.json': 2227,
+      'generation_config.json': 3893,
+      'merges.txt': 493869,
+      'normalizer.json': 52666,
+      'preprocessor_config.json': 339,
+      'quantize_config.json': 10126,
+      'special_tokens_map.json': 2194,
+      'tokenizer.json': 2480466,
+      'tokenizer_config.json': 282683,
+      'vocab.json': 1036584,
+      'onnx/encoder_model.onnx': 352825870,
+      'onnx/decoder_model_merged.onnx': 615324301,
+    },
+  ),
 ];
 const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
   {
     id: 'onnx-community/pyannote-segmentation-3.0',
     label: 'Segmentation 3.0 ONNX',
-    description: 'Token-free ONNX segmentation model for speech activity and speaker-change building blocks.',
+    description:
+      'Token-free ONNX segmentation model for speech activity and speaker-change building blocks.',
     model: 'pyannote',
-    files: ['config.json', 'preprocessor_config.json', 'onnx/model.onnx'].map((path) => ({
+    files: (
+      [
+        ['config.json', 408],
+        ['preprocessor_config.json', 158],
+        ['onnx/model.onnx', 5986908],
+      ] as const
+    ).map(([path, size]) => ({
       path,
-      url: buildHuggingFaceDownloadUrl('onnx-community/pyannote-segmentation-3.0', path),
-      type: path.endsWith('.onnx') ? 'application/octet-stream' : 'application/json',
+      url: buildHuggingFaceDownloadUrl(
+        'onnx-community/pyannote-segmentation-3.0',
+        path,
+      ),
+      type: path.endsWith('.onnx')
+        ? 'application/octet-stream'
+        : 'application/json',
+      size,
     })),
   },
   {
     id: 'deepghs/pyannote-embedding-onnx',
     label: 'Embedding ONNX',
-    description: 'Token-free ONNX speaker embedding model for clustering speaker turns.',
+    description:
+      'Token-free ONNX speaker embedding model for clustering speaker turns.',
     model: 'pyannote',
-    files: ['model.onnx', 'README.md'].map((path) => ({
+    files: (
+      [
+        ['model.onnx', 17631302],
+        ['README.md', 1033],
+      ] as const
+    ).map(([path, size]) => ({
       path,
       url: buildHuggingFaceDownloadUrl('deepghs/pyannote-embedding-onnx', path),
       type: path.endsWith('.onnx') ? 'application/octet-stream' : 'text/plain',
+      size,
     })),
   },
 ];
@@ -157,112 +255,133 @@ const GEMMA_DOWNLOADS: DirectModelDownload[] = [
   createDirectModelDownload({
     id: 'google/gemma-4-E2B-it',
     label: 'Google E2B IT',
-    description: 'Official Google Gemma 4 E2B instruct BF16 safetensors preset.',
+    description:
+      'Official Google Gemma 4 E2B instruct BF16 safetensors preset.',
     model: 'gemma4',
-    files: [
-      'chat_template.jinja',
-      'config.json',
-      'generation_config.json',
-      'model.safetensors',
-      'processor_config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-    ],
+    files: {
+      'chat_template.jinja': 16317,
+      'config.json': 4954,
+      'generation_config.json': 208,
+      'model.safetensors': 10246621918,
+      'processor_config.json': 1689,
+      'tokenizer.json': 32169626,
+      'tokenizer_config.json': 2095,
+    },
   }),
   createDirectModelDownload({
     id: 'google/gemma-4-E4B-it',
     label: 'Google E4B IT',
-    description: 'Official Google Gemma 4 E4B instruct BF16 safetensors preset.',
+    description:
+      'Official Google Gemma 4 E4B instruct BF16 safetensors preset.',
     model: 'gemma4',
-    files: [
-      'chat_template.jinja',
-      'config.json',
-      'generation_config.json',
-      'model.safetensors',
-      'processor_config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-    ],
+    files: {
+      'chat_template.jinja': 16317,
+      'config.json': 5145,
+      'generation_config.json': 208,
+      'model.safetensors': 15992595884,
+      'processor_config.json': 1689,
+      'tokenizer.json': 32169626,
+      'tokenizer_config.json': 2095,
+    },
   }),
   createDirectModelDownload({
     id: 'google/gemma-4-26B-A4B-it',
     label: 'Google 26B A4B IT',
-    description: 'Official Google Gemma 4 26B/A4B instruct BF16 safetensors preset.',
+    description:
+      'Official Google Gemma 4 26B/A4B instruct BF16 safetensors preset.',
     model: 'gemma4',
-    files: [
-      'chat_template.jinja',
-      'config.json',
-      'generation_config.json',
-      'model-00001-of-00002.safetensors',
-      'model-00002-of-00002.safetensors',
-      'model.safetensors.index.json',
-      'processor_config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-    ],
+    files: {
+      'chat_template.jinja': 16448,
+      'config.json': 3815,
+      'generation_config.json': 208,
+      'model-00001-of-00002.safetensors': 49907246508,
+      'model-00002-of-00002.safetensors': 1704763408,
+      'model.safetensors.index.json': 103196,
+      'processor_config.json': 1689,
+      'tokenizer.json': 32169626,
+      'tokenizer_config.json': 2095,
+    },
   }),
   createDirectModelDownload({
     id: 'google/gemma-4-31B-it',
     label: 'Google 31B IT',
-    description: 'Official Google Gemma 4 31B instruct BF16 safetensors preset.',
+    description:
+      'Official Google Gemma 4 31B instruct BF16 safetensors preset.',
     model: 'gemma4',
-    files: [
-      'chat_template.jinja',
-      'config.json',
-      'generation_config.json',
-      'model-00001-of-00002.safetensors',
-      'model-00002-of-00002.safetensors',
-      'model.safetensors.index.json',
-      'processor_config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-    ],
+    files: {
+      'chat_template.jinja': 16448,
+      'config.json': 4621,
+      'generation_config.json': 208,
+      'model-00001-of-00002.safetensors': 49784788364,
+      'model-00002-of-00002.safetensors': 12761549884,
+      'model.safetensors.index.json': 120246,
+      'processor_config.json': 1689,
+      'tokenizer.json': 32169626,
+      'tokenizer_config.json': 2095,
+    },
   }),
   createDirectModelDownload({
     id: 'unsloth/gemma-4-E2B-it-GGUF',
     label: 'E2B Q4_0 GGUF',
-    description: 'Quantized Gemma 4 E2B instruct preset based on google/gemma-4-E2B-it.',
+    description:
+      'Quantized Gemma 4 E2B instruct preset based on google/gemma-4-E2B-it.',
     model: 'gemma4',
-    files: ['config.json', 'gemma-4-E2B-it-Q4_0.gguf'],
+    files: {
+      'config.json': 5041,
+      'gemma-4-E2B-it-Q4_0.gguf': 3041375904,
+    },
   }),
   createDirectModelDownload({
     id: 'unsloth/gemma-4-E4B-it-GGUF',
     label: 'E4B Q4_0 GGUF',
-    description: 'Quantized Gemma 4 E4B instruct preset based on google/gemma-4-E4B-it.',
+    description:
+      'Quantized Gemma 4 E4B instruct preset based on google/gemma-4-E4B-it.',
     model: 'gemma4',
-    files: ['config.json', 'gemma-4-E4B-it-Q4_0.gguf'],
+    files: {
+      'config.json': 5232,
+      'gemma-4-E4B-it-Q4_0.gguf': 4836000448,
+    },
   }),
   createDirectModelDownload({
     id: 'bartowski/google_gemma-4-26B-A4B-it-GGUF',
     label: '26B A4B Q4_0 GGUF',
-    description: 'Quantized Gemma 4 26B/A4B instruct preset based on google/gemma-4-26B-A4B-it.',
+    description:
+      'Quantized Gemma 4 26B/A4B instruct preset based on google/gemma-4-26B-A4B-it.',
     model: 'gemma4',
-    files: ['README.md', 'google_gemma-4-26B-A4B-it-Q4_0.gguf'],
+    files: {
+      'README.md': 14903,
+      'google_gemma-4-26B-A4B-it-Q4_0.gguf': 14759382976,
+    },
   }),
   createDirectModelDownload({
     id: 'unsloth/gemma-4-31B-it-GGUF',
     label: '31B Q4_0 GGUF',
-    description: 'Quantized Gemma 4 31B instruct preset based on google/gemma-4-31B-it.',
+    description:
+      'Quantized Gemma 4 31B instruct preset based on google/gemma-4-31B-it.',
     model: 'gemma4',
-    files: ['config.json', 'gemma-4-31B-it-Q4_0.gguf'],
+    files: {
+      'config.json': 4702,
+      'gemma-4-31B-it-Q4_0.gguf': 17338245664,
+    },
   }),
   createDirectModelDownload({
     id: 'onnx-community/gemma-4-E2B-it-ONNX',
     label: 'E2B Q4 ONNX',
-    description: 'Quantized ONNX text-generation files for browser/WebGPU testing.',
+    description:
+      'Quantized ONNX text-generation files for browser/WebGPU testing.',
     model: 'gemma4',
-    files: [
-      'chat_template.jinja',
-      'config.json',
-      'generation_config.json',
-      'onnx/decoder_model_merged_q4.onnx',
-      'onnx/decoder_model_merged_q4.onnx_data',
-      'onnx/embed_tokens_q4.onnx',
-      'onnx/embed_tokens_q4.onnx_data',
-      'processor_config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-    ],
+    files: {
+      'chat_template.jinja': 16317,
+      'config.json': 5549,
+      'generation_config.json': 238,
+      'onnx/decoder_model_merged_q4.onnx': 647599,
+      'onnx/decoder_model_merged_q4.onnx_data': 1864102912,
+      'onnx/embed_tokens_q4.onnx': 5142,
+      'onnx/embed_tokens_q4.onnx_data': 1762656256,
+      'processor_config.json': 1689,
+      'tokenizer.json': 19439251,
+      'tokenizer_config.json': 18807,
+    },
   }),
 ];
 
@@ -287,137 +406,52 @@ const INITIAL_MODEL_SEARCHES: ModelSearchStates = {
   },
 };
 
-function isFileHandle(handle: FileSystemHandle): handle is FileSystemFileHandle {
+function isFileHandle(
+  handle: FileSystemHandle,
+): handle is FileSystemFileHandle {
   return handle.kind === 'file';
 }
 
 const fileSystem = new FileSystem();
+
 const WHISPER_SAMPLE_RATE = 16_000;
-const whisperTranscribers = new Map<string, Promise<WhisperTranscriber>>();
 
-class ActiveModelTranscriptionEngine implements TranscriptionEngine {
-  readonly #modelManager: ModelManager;
+async function decodeAudioBlobToMonoFloat32(
+  blob: Blob,
+  targetSampleRate: number,
+): Promise<Float32Array> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const decodeContext = new AudioContext();
 
-  constructor(modelManager: ModelManager) {
-    this.#modelManager = modelManager;
-  }
-
-  async transcribe(meeting: Meeting): Promise<Transcript> {
-    const activeModel = await this.#requireActiveModel('whisper');
-    const modelId = this.#getHuggingFaceModelId(activeModel);
-    const transcriber = await this.#getTranscriber(modelId);
-    const audio = await decodeMeetingAudio(meeting.audio);
-    const output = await transcriber(audio, {
-      chunk_length_s: 30,
-      return_timestamps: true,
-      task: 'transcribe',
-    });
-    const segments = output.chunks?.map((chunk) => ({
-      text: chunk.text.trim(),
-      startSeconds: chunk.timestamp[0],
-      endSeconds: chunk.timestamp[1],
-    })).filter((segment) => segment.text.length > 0);
-
-    return {
-      text: output.text.trim(),
-      segments: segments?.length === undefined || segments.length === 0
-        ? [
-            {
-              text: output.text.trim(),
-              startSeconds: 0,
-              endSeconds: Math.max(1, audio.length / WHISPER_SAMPLE_RATE),
-            },
-          ]
-        : segments,
-    };
-  }
-
-  async #getTranscriber(modelId: string): Promise<WhisperTranscriber> {
-    let transcriber = whisperTranscribers.get(modelId);
-
-    if (transcriber === undefined) {
-      transcriber = pipeline('automatic-speech-recognition', modelId, {
-        device: 'wasm',
-        dtype: {
-          encoder_model: 'fp32',
-          decoder_model_merged: 'fp32',
-        },
-        session_options: {
-          graphOptimizationLevel: 'disabled',
-        },
-      }).then(
-        (loadedPipeline) => loadedPipeline as WhisperTranscriber,
+  try {
+    const decoded = await decodeContext.decodeAudioData(arrayBuffer.slice(0));
+    const frameCount = Math.ceil(decoded.duration * targetSampleRate);
+    if (!Number.isFinite(decoded.duration) || frameCount <= 0) {
+      throw new Error(
+        `Decoded audio is empty (${formatBytes(blob.size)} source file).`,
       );
-      whisperTranscribers.set(modelId, transcriber);
     }
 
-    return transcriber;
-  }
-
-  #getHuggingFaceModelId(model: ModelVersionManifestEntry): string {
-    const modelId = model.metadata?.['huggingFaceModelId'];
-
-    if (typeof modelId !== 'string' || modelId.length === 0) {
-      throw new Error('Active Whisper model is missing Hugging Face model metadata. Re-download a Whisper ONNX preset.');
+    const offlineContext = new OfflineAudioContext(
+      1,
+      frameCount,
+      targetSampleRate,
+    );
+    const source = offlineContext.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offlineContext.destination);
+    source.start();
+    const rendered = await offlineContext.startRendering();
+    const samples = rendered.getChannelData(0).slice();
+    if (samples.length === 0) {
+      throw new Error(
+        `Resampled audio is empty (${decoded.duration.toFixed(3)}s decoded duration).`,
+      );
     }
 
-    return modelId;
-  }
-
-  async #requireActiveModel(model: ManagedModel): Promise<ModelVersionManifestEntry> {
-    const activeModel = await this.#modelManager.getActiveVersion(model);
-
-    if (activeModel === null) {
-      throw new Error(`Download and activate a ${model} model first.`);
-    }
-
-    return activeModel.manifest;
-  }
-}
-
-class ActiveModelSpeakerDiarizationEngine implements SpeakerDiarizationEngine {
-  readonly #modelManager: ModelManager;
-
-  constructor(modelManager: ModelManager) {
-    this.#modelManager = modelManager;
-  }
-
-  async diarize(): Promise<{ speaker: string; startSeconds: number; endSeconds: number }[]> {
-    await this.#requireActiveModel('pyannote');
-
-    return [
-      {
-        speaker: 'speaker-1',
-        startSeconds: 0,
-        endSeconds: Number.POSITIVE_INFINITY,
-      },
-    ];
-  }
-
-  async #requireActiveModel(model: ManagedModel): Promise<void> {
-    const activeModel = await this.#modelManager.getActiveVersion(model);
-
-    if (activeModel === null) {
-      throw new Error(`Download and activate a ${model} model first.`);
-    }
-  }
-}
-
-class ActiveModelSpeakerNamingModel implements SpeakerNamingModel {
-  readonly #modelManager: ModelManager;
-
-  constructor(modelManager: ModelManager) {
-    this.#modelManager = modelManager;
-  }
-
-  async nameSpeakers(_input: SpeakerNamingInput): Promise<SpeakerNameGuess[]> {
-    const activeModel = await this.#modelManager.getActiveVersion('gemma4');
-
-    if (activeModel === null) {
-      throw new Error('Download and activate a gemma4 model first.');
-    }
-
-    return [];
+    return samples;
+  } finally {
+    void decodeContext.close();
   }
 }
 
@@ -431,21 +465,6 @@ function formatBytes(size: number): string {
   }
 
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-async function decodeMeetingAudio(audio: Meeting['audio']): Promise<Float32Array> {
-  const blob = audio instanceof Blob
-    ? audio
-    : audio instanceof Uint8Array
-      ? new Blob([new Uint8Array(audio).buffer])
-      : new Blob([audio]);
-  const url = URL.createObjectURL(blob);
-
-  try {
-    return await load_audio(url, WHISPER_SAMPLE_RATE);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 function formatOptionalBytes(size: number | null | undefined): string {
@@ -467,32 +486,39 @@ function formatDate(timestamp: number): string {
   }).format(timestamp);
 }
 
+function formatTimestamp(totalSeconds: number): string {
+  const safeSeconds = Number.isFinite(totalSeconds)
+    ? Math.max(0, totalSeconds)
+    : 0;
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = Math.floor(safeSeconds % 60);
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 function createWhisperOnnxDownload(
   repositoryId: string,
   label: string,
   description: string,
+  fileSizes: Record<string, number>,
 ): DirectModelDownload {
-  const files = [
-    'config.json',
-    'generation_config.json',
-    'preprocessor_config.json',
-    'tokenizer.json',
-    'tokenizer_config.json',
-    'vocab.json',
-    'merges.txt',
-    'onnx/encoder_model.onnx',
-    'onnx/decoder_model_merged.onnx',
-  ];
-
   return {
     id: repositoryId,
     label,
     description,
     model: 'whisper',
-    files: files.map((path) => ({
+    files: Object.entries(fileSizes).map(([path, size]) => ({
       path,
       url: buildHuggingFaceDownloadUrl(repositoryId, path),
-      type: path.endsWith('.onnx') ? 'application/octet-stream' : 'application/json',
+      type: path.endsWith('.onnx')
+        ? 'application/octet-stream'
+        : 'application/json',
+      size,
     })),
   };
 }
@@ -502,17 +528,18 @@ function createDirectModelDownload(options: {
   label: string;
   description: string;
   model: ManagedModel;
-  files: string[];
+  files: Record<string, number>;
 }): DirectModelDownload {
   return {
     id: options.id,
     label: options.label,
     description: options.description,
     model: options.model,
-    files: options.files.map((path) => ({
+    files: Object.entries(options.files).map(([path, size]) => ({
       path,
       url: buildHuggingFaceDownloadUrl(options.id, path),
       type: resolveModelFileType(path),
+      size,
     })),
   };
 }
@@ -551,7 +578,9 @@ async function downloadBlobWithProgress(
   const response = await fetch(file.url);
 
   if (!response.ok) {
-    throw new Error(`Download failed for ${file.path} with ${response.status} ${response.statusText}.`);
+    throw new Error(
+      `Download failed for ${file.path} with ${response.status} ${response.statusText}.`,
+    );
   }
 
   const totalBytes = Number(response.headers.get('content-length'));
@@ -574,7 +603,9 @@ async function downloadBlobWithProgress(
       break;
     }
 
-    chunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    chunks.push(
+      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
+    );
     loadedBytes += value.byteLength;
     onProgress(loadedBytes, normalizedTotalBytes);
   }
@@ -586,11 +617,18 @@ function getModelSearchText(model: HuggingFaceModel): string {
   return [model.id, ...(model.tags ?? [])].join(' ').toLowerCase();
 }
 
-function supportsTargetModel(model: ManagedModel, huggingFaceModel: HuggingFaceModel): boolean {
+function supportsTargetModel(
+  model: ManagedModel,
+  huggingFaceModel: HuggingFaceModel,
+): boolean {
   const text = getModelSearchText(huggingFaceModel);
 
   if (model === 'whisper') {
-    return text.includes('whisper') || text.includes('faster-whisper') || text.includes('fast-whisper');
+    return (
+      text.includes('whisper') ||
+      text.includes('faster-whisper') ||
+      text.includes('fast-whisper')
+    );
   }
 
   if (model === 'pyannote') {
@@ -612,13 +650,18 @@ function getDownloadableFiles(model: HuggingFaceModel): string[] {
       const lowerFileName = fileName.toLowerCase();
       return (
         !lowerFileName.startsWith('.') &&
-        MODEL_FILE_EXTENSIONS.some((extension) => lowerFileName.endsWith(extension))
+        MODEL_FILE_EXTENSIONS.some((extension) =>
+          lowerFileName.endsWith(extension),
+        )
       );
     })
     .sort((first, second) => first.localeCompare(second));
 }
 
-function buildHuggingFaceDownloadUrl(modelId: string, fileName: string): string {
+function buildHuggingFaceDownloadUrl(
+  modelId: string,
+  fileName: string,
+): string {
   return `https://huggingface.co/${modelId}/resolve/main/${fileName
     .split('/')
     .map((part) => encodeURIComponent(part))
@@ -629,7 +672,10 @@ async function searchHuggingFaceModels(
   target: ModelDownloadTarget,
   query: string,
 ): Promise<HuggingFaceModel[]> {
-  const queries = target.model === 'whisper' ? [query, 'faster-whisper', 'fast-whisper'] : [query];
+  const queries =
+    target.model === 'whisper'
+      ? [query, 'faster-whisper', 'fast-whisper']
+      : [query];
   const models = new Map<string, HuggingFaceModel>();
 
   for (const searchQuery of queries) {
@@ -640,15 +686,22 @@ async function searchHuggingFaceModels(
       sort: 'downloads',
       direction: '-1',
     });
-    const response = await fetch(`https://huggingface.co/api/models?${params.toString()}`);
+    const response = await fetch(
+      `https://huggingface.co/api/models?${params.toString()}`,
+    );
 
     if (!response.ok) {
-      throw new Error(`Hugging Face search failed with ${response.status} ${response.statusText}.`);
+      throw new Error(
+        `Hugging Face search failed with ${response.status} ${response.statusText}.`,
+      );
     }
 
     const results = (await response.json()) as HuggingFaceModel[];
     for (const model of results) {
-      if (supportsTargetModel(target.model, model) && getDownloadableFiles(model).length > 0) {
+      if (
+        supportsTargetModel(target.model, model) &&
+        getDownloadableFiles(model).length > 0
+      ) {
         models.set(model.id, model);
       }
     }
@@ -683,6 +736,35 @@ async function loadStoredAudioFiles(
   return files.sort((first, second) => second.updatedAt - first.updatedAt);
 }
 
+async function detectWebGpuSupport(): Promise<boolean> {
+  const gpu = (navigator as NavigatorWithWebGpu).gpu;
+
+  if (gpu === undefined) {
+    return false;
+  }
+
+  try {
+    return (await gpu.requestAdapter()) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function getWebGpuSupportLabel(support: WebGpuSupport): string {
+  if (support === 'checking') {
+    return 'Checking WebGPU...';
+  }
+
+  return support === 'supported' ? 'WebGPU available' : 'WASM fallback';
+}
+
+function getWhisperRuntimeLabel(
+  support: WebGpuSupport,
+  quantization: WhisperQuantization,
+): string {
+  return 'fp32 runs on WASM for the current Whisper runtime.';
+}
+
 function useObjectUrlCleanup(files: StoredAudioFile[]): void {
   useEffect(() => {
     return () => {
@@ -697,23 +779,106 @@ export function App() {
   const recorderRef = useRef<AudioRecorder | null>(null);
   const directoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const modelManagerRef = useRef<ModelManager | null>(null);
+  const engineWorkerRef = useRef<Worker | null>(null);
+  const engineRequestIdRef = useRef(0);
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [engineStatus, setEngineStatus] = useState<EngineStatus>('idle');
   const [message, setMessage] = useState('Opening OPFS audio-files folder...');
-  const [modelMessage, setModelMessage] = useState('Opening OPFS models folder...');
-  const [engineMessage, setEngineMessage] = useState('Select a recording and run the engine.');
+  const [modelMessage, setModelMessage] = useState(
+    'Opening OPFS models folder...',
+  );
+  const [engineMessage, setEngineMessage] = useState(
+    'Select a recording and run the engine.',
+  );
   const [files, setFiles] = useState<StoredAudioFile[]>([]);
-  const [lastRecording, setLastRecording] = useState<AudioRecordingResult | null>(null);
-  const [modelSearches, setModelSearches] = useState<ModelSearchStates>(INITIAL_MODEL_SEARCHES);
-  const [modelVersions, setModelVersions] = useState<ModelVersionManifestEntry[]>([]);
-  const [downloadingModel, setDownloadingModel] = useState<ManagedModel | null>(null);
+  const [lastRecording, setLastRecording] =
+    useState<AudioRecordingResult | null>(null);
+  const [modelSearches, setModelSearches] = useState<ModelSearchStates>(
+    INITIAL_MODEL_SEARCHES,
+  );
+  const [modelVersions, setModelVersions] = useState<
+    ModelVersionManifestEntry[]
+  >([]);
+  const [downloadingModel, setDownloadingModel] = useState<ManagedModel | null>(
+    null,
+  );
   const [selectedAudioName, setSelectedAudioName] = useState('');
+  const [selectedEngineModels, setSelectedEngineModels] =
+    useState<EngineModelSelections>(EMPTY_ENGINE_MODEL_SELECTIONS);
   const [meetingNotes, setMeetingNotes] = useState<MeetingNotes | null>(null);
+  const [transcriptionResult, setTranscriptionResult] =
+    useState<Transcript | null>(null);
+  const [engineDialogOpen, setEngineDialogOpen] = useState(false);
+  const [engineDialogMode, setEngineDialogMode] = useState<
+    'engine' | 'transcription'
+  >('engine');
+  const [engineLog, setEngineLog] = useState<string[]>([]);
+  const [liveTranscriptSegments, setLiveTranscriptSegments] = useState<
+    LiveTranscriptSegment[]
+  >([]);
+  const [engineBarValue, setEngineBarValue] = useState<number | null>(null);
+  const [webGpuSupport, setWebGpuSupport] = useState<WebGpuSupport>('checking');
+  const [whisperQuantization, setWhisperQuantization] =
+    useState<WhisperQuantization>('fp32');
+  const engineLogRef = useRef<HTMLDivElement | null>(null);
+  const [engineProgress, setEngineProgress] = useState<
+    Record<EngineStage, EngineProgressEvent['status'] | undefined>
+  >({
+    transcription: undefined,
+    diarization: undefined,
+    'speaker-naming': undefined,
+  });
   const [activePage, setActivePage] = useState<AppPage>('models');
-  const [remoteFileSizes, setRemoteFileSizes] = useState<Record<string, number | null>>({});
-  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState | null>(null);
+  const [remoteFileSizes, setRemoteFileSizes] = useState<
+    Record<string, number | null>
+  >({});
+  const [downloadProgress, setDownloadProgress] =
+    useState<DownloadProgressState | null>(null);
 
   useObjectUrlCleanup(files);
+
+  useEffect(() => {
+    if (!engineDialogOpen) {
+      return;
+    }
+
+    const node = engineLogRef.current;
+
+    if (node !== null) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [engineDialogOpen, engineLog]);
+
+  useEffect(() => {
+    setSelectedEngineModels((current) => {
+      let changed = false;
+      const nextSelections: EngineModelSelections = { ...current };
+
+      for (const target of MODEL_DOWNLOAD_TARGETS) {
+        const versions = modelVersions.filter(
+          (version) => version.model === target.model,
+        );
+        const currentSelection = current[target.model];
+        const hasCurrentSelection = versions.some(
+          (version) => version.version === currentSelection,
+        );
+        const fallbackSelection =
+          versions.find((version) => version.active)?.version ??
+          versions[0]?.version ??
+          '';
+        const nextSelection = hasCurrentSelection
+          ? currentSelection
+          : fallbackSelection;
+
+        if (nextSelection !== currentSelection) {
+          changed = true;
+          nextSelections[target.model] = nextSelection;
+        }
+      }
+
+      return changed ? nextSelections : current;
+    });
+  }, [modelVersions]);
 
   async function refreshFiles(directoryHandle = directoryHandleRef.current) {
     if (directoryHandle === null) {
@@ -740,25 +905,70 @@ export function App() {
     return remoteFileSizes[url];
   }
 
-  function getKnownDownloadSize(download: DirectModelDownload): number | null | undefined {
-    let total = 0;
+function getKnownDownloadSize(download: DirectModelDownload): number {
+  return download.files.reduce((total, file) => total + file.size, 0);
+}
 
-    for (const file of download.files) {
-      const size = getKnownFileSize(file.url);
+function getModelVersionTitle(version: ModelVersionManifestEntry): string {
+  const title = version.metadata?.['title'];
+  const huggingFaceModelId = version.metadata?.['huggingFaceModelId'];
+  const huggingFaceFile = version.metadata?.['huggingFaceFile'];
 
-      if (size === undefined) {
-        return undefined;
-      }
-
-      if (size === null) {
-        return null;
-      }
-
-      total += size;
-    }
-
-    return total;
+  if (typeof title === 'string' && title.length > 0) {
+    return title;
   }
+
+  if (typeof huggingFaceModelId === 'string' && huggingFaceModelId.length > 0) {
+    return typeof huggingFaceFile === 'string' && huggingFaceFile.length > 0
+      ? `${huggingFaceModelId} / ${huggingFaceFile}`
+      : huggingFaceModelId;
+  }
+
+  return version.version;
+}
+
+function getModelVersionDetail(version: ModelVersionManifestEntry): string {
+  const size = version.files.reduce((total, file) => total + file.size, 0);
+  return `${version.version} | ${formatBytes(size)}`;
+}
+
+function getDirectDownloadKey(download: DirectModelDownload): string {
+  return `${download.model}-${download.id}-${download.label}`;
+}
+
+function getDirectDownloadVersion(
+  download: DirectModelDownload,
+  versions = modelVersions,
+): ModelVersionManifestEntry | undefined {
+  const sourceUrls = download.files.map((file) => file.url);
+
+  return versions.find((version) => {
+    const metadata = version.metadata ?? {};
+    const storedSourceUrls = metadata['sourceUrls'];
+
+    return (
+      version.model === download.model &&
+      metadata['huggingFaceModelId'] === download.id &&
+      Array.isArray(storedSourceUrls) &&
+      sourceUrls.length === storedSourceUrls.length &&
+      sourceUrls.every((url) => storedSourceUrls.includes(url))
+    );
+  });
+}
+
+function getSearchDownloadVersion(
+  model: ManagedModel,
+  huggingFaceModelId: string,
+  fileName: string,
+  versions = modelVersions,
+): ModelVersionManifestEntry | undefined {
+  return versions.find(
+    (version) =>
+      version.model === model &&
+      version.metadata?.['huggingFaceModelId'] === huggingFaceModelId &&
+      version.metadata?.['huggingFaceFile'] === fileName,
+  );
+}
 
   function ensureRemoteFileSizes(urls: string[]) {
     const unknownUrls = urls.filter((url) => !(url in remoteFileSizes));
@@ -776,6 +986,12 @@ export function App() {
   useEffect(() => {
     let isMounted = true;
 
+    void detectWebGpuSupport().then((supported) => {
+      if (isMounted) {
+        setWebGpuSupport(supported ? 'supported' : 'unsupported');
+      }
+    });
+
     async function setupRecorder() {
       try {
         const directoryHandle = await fileSystem.getAudioFilesDir();
@@ -792,15 +1008,25 @@ export function App() {
         await refreshModelVersions(modelManager);
         setStatus('ready');
         setMessage('Ready. Recordings will be saved to OPFS/audio-files.');
-        setModelMessage('Ready. Search Hugging Face and cache model files in OPFS/models.');
+        setModelMessage(
+          'Ready. Search Hugging Face and cache model files in OPFS/models.',
+        );
       } catch (error) {
         if (!isMounted) {
           return;
         }
 
         setStatus('error');
-        setMessage(error instanceof Error ? error.message : 'Failed to open OPFS audio-files folder.');
-        setModelMessage(error instanceof Error ? error.message : 'Failed to open OPFS models folder.');
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : 'Failed to open OPFS audio-files folder.',
+        );
+        setModelMessage(
+          error instanceof Error
+            ? error.message
+            : 'Failed to open OPFS models folder.',
+        );
       }
     }
 
@@ -809,6 +1035,8 @@ export function App() {
     return () => {
       isMounted = false;
       recorderRef.current?.cancel();
+      engineWorkerRef.current?.terminate();
+      engineWorkerRef.current = null;
     };
   }, []);
 
@@ -817,21 +1045,10 @@ export function App() {
       return;
     }
 
-    ensureRemoteFileSizes(
-      [...WHISPER_ONNX_DOWNLOADS, ...PYANNOTE_DOWNLOADS, ...GEMMA_DOWNLOADS].flatMap((download) =>
-        download.files.map((file) => file.url),
-      ),
-    );
-  }, [activePage, remoteFileSizes]);
-
-  useEffect(() => {
-    if (activePage !== 'models') {
-      return;
-    }
-
     const selectedUrls = MODEL_DOWNLOAD_TARGETS.flatMap((target) =>
       modelSearches[target.model].results.flatMap((result) => {
-        const selectedFile = modelSearches[target.model].selectedFiles[result.id];
+        const selectedFile =
+          modelSearches[target.model].selectedFiles[result.id];
         return selectedFile === undefined
           ? []
           : [buildHuggingFaceDownloadUrl(result.id, selectedFile)];
@@ -851,10 +1068,14 @@ export function App() {
       setMessage('Requesting microphone access...');
       await recorder.start();
       setStatus('recording');
-      setMessage('Recording. Stop to persist the audio file in OPFS/audio-files.');
+      setMessage(
+        'Recording. Stop to persist the audio file in OPFS/audio-files.',
+      );
     } catch (error) {
       setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to start recording.');
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to start recording.',
+      );
     }
   }
 
@@ -874,23 +1095,33 @@ export function App() {
       setMessage(`Saved ${recording.fileName} to OPFS/audio-files.`);
     } catch (error) {
       setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to save recording.');
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to save recording.',
+      );
     }
   }
 
   async function handleUploadRecordings(filesToUpload: FileList | null) {
     const directoryHandle = directoryHandleRef.current;
 
-    if (directoryHandle === null || filesToUpload === null || filesToUpload.length === 0) {
+    if (
+      directoryHandle === null ||
+      filesToUpload === null ||
+      filesToUpload.length === 0
+    ) {
       return;
     }
 
     try {
       setStatus('saving');
-      setMessage(`Importing ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'}...`);
+      setMessage(
+        `Importing ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'}...`,
+      );
 
       for (const file of Array.from(filesToUpload)) {
-        const fileHandle = await directoryHandle.getFileHandle(file.name, { create: true });
+        const fileHandle = await directoryHandle.getFileHandle(file.name, {
+          create: true,
+        });
         const writable = await fileHandle.createWritable();
 
         try {
@@ -904,10 +1135,16 @@ export function App() {
 
       await refreshFiles(directoryHandle);
       setStatus('ready');
-      setMessage(`Imported ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'} into OPFS/audio-files.`);
+      setMessage(
+        `Imported ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'} into OPFS/audio-files.`,
+      );
     } catch (error) {
       setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to import audio files.');
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to import audio files.',
+      );
     }
   }
 
@@ -917,7 +1154,10 @@ export function App() {
     setMessage('Recording canceled. No audio file was stored.');
   }
 
-  function updateModelSearch(model: ManagedModel, update: Partial<ModelSearchState>) {
+  function updateModelSearch(
+    model: ManagedModel,
+    update: Partial<ModelSearchState>,
+  ) {
     setModelSearches((currentSearches) => ({
       ...currentSearches,
       [model]: {
@@ -931,7 +1171,11 @@ export function App() {
     updateModelSearch(model, { query });
   }
 
-  function handleSelectedModelFileChange(model: ManagedModel, modelId: string, fileName: string) {
+  function handleSelectedModelFileChange(
+    model: ManagedModel,
+    modelId: string,
+    fileName: string,
+  ) {
     updateModelSearch(model, {
       selectedFiles: {
         ...modelSearches[model].selectedFiles,
@@ -941,7 +1185,8 @@ export function App() {
   }
 
   async function handleSearchModels(target: ModelDownloadTarget) {
-    const query = modelSearches[target.model].query.trim() || target.defaultSearch;
+    const query =
+      modelSearches[target.model].query.trim() || target.defaultSearch;
 
     try {
       updateModelSearch(target.model, { searching: true });
@@ -949,7 +1194,10 @@ export function App() {
 
       const results = await searchHuggingFaceModels(target, query);
       const selectedFiles = Object.fromEntries(
-        results.map((result) => [result.id, getDownloadableFiles(result)[0] ?? '']),
+        results.map((result) => [
+          result.id,
+          getDownloadableFiles(result)[0] ?? '',
+        ]),
       );
 
       updateModelSearch(target.model, {
@@ -964,7 +1212,11 @@ export function App() {
       );
     } catch (error) {
       updateModelSearch(target.model, { searching: false });
-      setModelMessage(error instanceof Error ? error.message : `Failed to search ${target.label}.`);
+      setModelMessage(
+        error instanceof Error
+          ? error.message
+          : `Failed to search ${target.label}.`,
+      );
     }
   }
 
@@ -973,22 +1225,30 @@ export function App() {
     huggingFaceModel: HuggingFaceModel,
   ) {
     const modelManager = modelManagerRef.current;
-    const fileName = modelSearches[target.model].selectedFiles[huggingFaceModel.id];
+    const fileName =
+      modelSearches[target.model].selectedFiles[huggingFaceModel.id];
 
-    if (modelManager === null || fileName === undefined || fileName.length === 0) {
+    if (
+      modelManager === null ||
+      fileName === undefined ||
+      fileName.length === 0
+    ) {
       setModelMessage('Select a model file first.');
       return;
     }
 
     try {
       setDownloadingModel(target.model);
-      setModelMessage(`Downloading ${target.label} from ${huggingFaceModel.id}...`);
+      setModelMessage(
+        `Downloading ${target.label} from ${huggingFaceModel.id}...`,
+      );
 
       const url = buildHuggingFaceDownloadUrl(huggingFaceModel.id, fileName);
       const directFile: DirectModelFile = {
         path: fileName,
         url,
         type: resolveModelFileType(fileName),
+        size: getKnownFileSize(url) ?? 0,
       };
       setDownloadProgress({
         title: `Downloading ${target.label}`,
@@ -999,23 +1259,28 @@ export function App() {
         totalBytes: getKnownFileSize(url) ?? null,
         status: 'downloading',
       });
-      const file = await downloadBlobWithProgress(directFile, (loadedBytes, totalBytes) => {
-        setDownloadProgress({
-          title: `Downloading ${target.label}`,
-          currentFile: fileName,
-          fileIndex: 1,
-          fileCount: 1,
-          loadedBytes,
-          totalBytes,
-          status: 'downloading',
-        });
-      });
+      const file = await downloadBlobWithProgress(
+        directFile,
+        (loadedBytes, totalBytes) => {
+          setDownloadProgress({
+            title: `Downloading ${target.label}`,
+            currentFile: fileName,
+            fileIndex: 1,
+            fileCount: 1,
+            loadedBytes,
+            totalBytes,
+            status: 'downloading',
+          });
+        },
+      );
       const version = `${huggingFaceModel.id.replaceAll('/', '__')}--${new Date()
         .toISOString()
         .replaceAll(':', '-')}`;
 
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'saving' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'saving' },
       );
 
       await modelManager.addVersion({
@@ -1030,6 +1295,7 @@ export function App() {
           },
         ],
         metadata: {
+          title: `${huggingFaceModel.id} / ${fileName}`,
           huggingFaceModelId: huggingFaceModel.id,
           huggingFaceFile: fileName,
           sourceUrl: url,
@@ -1038,14 +1304,22 @@ export function App() {
 
       await refreshModelVersions(modelManager);
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'complete' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'complete' },
       );
       setModelMessage(`Downloaded and activated ${target.label} ${version}.`);
     } catch (error) {
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'error' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'error' },
       );
-      setModelMessage(error instanceof Error ? error.message : `Failed to download ${target.label}.`);
+      setModelMessage(
+        error instanceof Error
+          ? error.message
+          : `Failed to download ${target.label}.`,
+      );
     } finally {
       setDownloadingModel(null);
     }
@@ -1078,18 +1352,23 @@ export function App() {
           status: 'downloading',
         });
 
-        const blob = await downloadBlobWithProgress(file, (loadedBytes, fileTotalBytes) => {
-          const fallbackTotalBytes = knownTotalBytes ?? completedBytes + (fileTotalBytes ?? loadedBytes);
-          setDownloadProgress({
-            title: `Downloading ${download.label}`,
-            currentFile: file.path,
-            fileIndex: index + 1,
-            fileCount: download.files.length,
-            loadedBytes: completedBytes + loadedBytes,
-            totalBytes: fallbackTotalBytes,
-            status: 'downloading',
-          });
-        });
+        const blob = await downloadBlobWithProgress(
+          file,
+          (loadedBytes, fileTotalBytes) => {
+            const fallbackTotalBytes =
+              knownTotalBytes ??
+              completedBytes + (fileTotalBytes ?? loadedBytes);
+            setDownloadProgress({
+              title: `Downloading ${download.label}`,
+              currentFile: file.path,
+              fileIndex: index + 1,
+              fileCount: download.files.length,
+              loadedBytes: completedBytes + loadedBytes,
+              totalBytes: fallbackTotalBytes,
+              status: 'downloading',
+            });
+          },
+        );
 
         completedBytes += blob.size;
 
@@ -1105,7 +1384,9 @@ export function App() {
         .replaceAll(':', '-')}`;
 
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'saving' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'saving' },
       );
 
       await modelManager.addVersion({
@@ -1114,6 +1395,7 @@ export function App() {
         activate: true,
         files,
         metadata: {
+          title: download.label,
           format: download.model === 'gemma4' ? 'direct-hugging-face' : 'onnx',
           huggingFaceModelId: download.id,
           sourceUrls: download.files.map((file) => file.url),
@@ -1123,41 +1405,169 @@ export function App() {
 
       await refreshModelVersions(modelManager);
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'complete' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'complete' },
       );
       setModelMessage(`Downloaded and activated ${download.label}.`);
     } catch (error) {
       setDownloadProgress((currentProgress) =>
-        currentProgress === null ? null : { ...currentProgress, status: 'error' },
+        currentProgress === null
+          ? null
+          : { ...currentProgress, status: 'error' },
       );
-      setModelMessage(error instanceof Error ? error.message : `Failed to download ${download.label}.`);
+      setModelMessage(
+        error instanceof Error
+          ? error.message
+          : `Failed to download ${download.label}.`,
+      );
     } finally {
       setDownloadingModel(null);
     }
   }
 
-  async function handleRunEngine() {
+  async function handleRemoveModelVersion(
+    version: ModelVersionManifestEntry,
+  ): Promise<void> {
     const modelManager = modelManagerRef.current;
-    const selectedFile = files.find((file) => file.name === selectedAudioName);
 
-    if (modelManager === null || selectedFile === undefined) {
-      setEngineMessage('Select a stored recording first.');
+    if (modelManager === null) {
+      setModelMessage('Models folder is not ready yet.');
       return;
     }
 
     try {
-      setEngineStatus('processing');
+      setModelMessage(`Removing ${getModelVersionTitle(version)}...`);
+      await modelManager.removeVersion(version.model, version.version);
+      await refreshModelVersions(modelManager);
+      setModelMessage(`Removed ${getModelVersionTitle(version)}.`);
+    } catch (error) {
+      setModelMessage(
+        error instanceof Error ? error.message : 'Failed to remove model.',
+      );
+    }
+  }
+
+  function getEngineWorker(): Worker {
+    if (engineWorkerRef.current === null) {
+      engineWorkerRef.current = new EngineWorker();
+    }
+
+    return engineWorkerRef.current;
+  }
+
+  async function handleRunEngine() {
+    const selectedFile = files.find((file) => file.name === selectedAudioName);
+    const missingModel = MODEL_DOWNLOAD_TARGETS.find(
+      (target) => selectedEngineModels[target.model].length === 0,
+    );
+
+    if (selectedFile === undefined) {
+      setEngineMessage('Select a stored recording first.');
+      return;
+    }
+
+    if (missingModel !== undefined) {
+      setEngineMessage(`Download a ${missingModel.label} model first.`);
+      return;
+    }
+
+    setEngineStatus('processing');
+    setEngineMessage(`Processing ${selectedFile.name}...`);
+    setEngineDialogMode('engine');
+    setEngineDialogOpen(true);
+    setEngineLog([`Starting transcription of ${selectedFile.name}.`]);
+    setLiveTranscriptSegments([]);
+    setEngineBarValue(null);
+    setEngineProgress({
+      transcription: undefined,
+      diarization: undefined,
+      'speaker-naming': undefined,
+    });
+
+    try {
+      const audioFile = await selectedFile.fileHandle.getFile();
+      setEngineMessage(`Decoding ${selectedFile.name}...`);
+      setEngineLog((current) => [
+        ...current,
+        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+      ]);
+      const samples = await decodeAudioBlobToMonoFloat32(
+        audioFile,
+        WHISPER_SAMPLE_RATE,
+      );
+      setEngineLog((current) => [
+        ...current,
+        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Runtime: ${getWhisperRuntimeLabel(webGpuSupport, whisperQuantization)}`,
+        'Whisper precision: fp32.',
+        `Using Whisper ${selectedEngineModels.whisper}.`,
+        `Using Pyannote ${selectedEngineModels.pyannote}.`,
+        `Using Gemma 4 ${selectedEngineModels.gemma4}.`,
+      ]);
       setEngineMessage(`Processing ${selectedFile.name}...`);
-      const audio = await selectedFile.fileHandle.getFile();
-      const engine = new Engine({
-        transcription: new ActiveModelTranscriptionEngine(modelManager),
-        diarization: new ActiveModelSpeakerDiarizationEngine(modelManager),
-        speakerNaming: new ActiveModelSpeakerNamingModel(modelManager),
-      });
-      const notes = await engine.processMeeting({
-        id: selectedFile.name,
-        title: selectedFile.name,
-        audio,
+      const worker = getEngineWorker();
+      const requestId = ++engineRequestIdRef.current;
+
+      const notes = await new Promise<MeetingNotes>((resolve, reject) => {
+        const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
+          const msg = event.data;
+
+          if (msg.id !== requestId) {
+            return;
+          }
+
+          if (msg.type === 'progress') {
+            const { stage, status } = msg.event;
+            setEngineProgress((current) => ({ ...current, [stage]: status }));
+            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
+            return;
+          }
+
+          if (msg.type === 'log') {
+            setEngineLog((current) => [...current, msg.line]);
+            return;
+          }
+
+          if (msg.type === 'bar') {
+            setEngineBarValue(msg.value);
+            return;
+          }
+
+          if (msg.type === 'live-transcript') {
+            setLiveTranscriptSegments(msg.segments);
+            return;
+          }
+
+          worker.removeEventListener('message', handleMessage);
+
+          if (msg.ok) {
+            if (msg.mode !== 'engine') {
+              reject(
+                new Error(
+                  'Worker returned an unexpected transcription result.',
+                ),
+              );
+              return;
+            }
+
+            setLiveTranscriptSegments(msg.notes.transcript.segments);
+            resolve(msg.notes);
+          } else {
+            reject(new Error(msg.error));
+          }
+        };
+
+        worker.addEventListener('message', handleMessage);
+        const request: EngineWorkerRequest = {
+          id: requestId,
+          fileName: selectedFile.name,
+          audio: samples,
+          selectedModels: selectedEngineModels,
+          useWebGpu: webGpuSupport === 'supported',
+          whisperDtype: whisperQuantization,
+        };
+        worker.postMessage(request, [samples.buffer]);
       });
 
       setMeetingNotes(notes);
@@ -1165,19 +1575,148 @@ export function App() {
       setEngineMessage(`Engine completed for ${selectedFile.name}.`);
     } catch (error) {
       setEngineStatus('error');
-      setEngineMessage(error instanceof Error ? error.message : 'Engine processing failed.');
+      setEngineMessage(
+        error instanceof Error ? error.message : 'Engine processing failed.',
+      );
     }
   }
 
-  function getActiveModelVersion(model: ManagedModel): ModelVersionManifestEntry | undefined {
-    return modelVersions.find((version) => version.model === model && version.active);
+  async function handleRunTranscription() {
+    const selectedFile = files.find((file) => file.name === selectedAudioName);
+
+    if (selectedFile === undefined) {
+      setEngineMessage('Select a stored recording first.');
+      return;
+    }
+
+    if (selectedEngineModels.whisper.length === 0) {
+      setEngineMessage('Download a Whisper model first.');
+      return;
+    }
+
+    setEngineStatus('processing');
+    setEngineMessage(`Transcribing ${selectedFile.name}...`);
+    setEngineDialogMode('transcription');
+    setEngineDialogOpen(true);
+    setEngineLog([`Starting transcription-only run for ${selectedFile.name}.`]);
+    setLiveTranscriptSegments([]);
+    setEngineBarValue(null);
+    setEngineProgress({
+      transcription: undefined,
+      diarization: undefined,
+      'speaker-naming': undefined,
+    });
+    setTranscriptionResult(null);
+
+    try {
+      const audioFile = await selectedFile.fileHandle.getFile();
+      setEngineMessage(`Decoding ${selectedFile.name}...`);
+      setEngineLog((current) => [
+        ...current,
+        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+      ]);
+      const samples = await decodeAudioBlobToMonoFloat32(
+        audioFile,
+        WHISPER_SAMPLE_RATE,
+      );
+      setEngineLog((current) => [
+        ...current,
+        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Runtime: ${getWhisperRuntimeLabel(webGpuSupport, whisperQuantization)}`,
+        'Whisper precision: fp32.',
+        `Using Whisper ${selectedEngineModels.whisper}.`,
+      ]);
+      setEngineMessage(`Transcribing ${selectedFile.name}...`);
+      const worker = getEngineWorker();
+      const requestId = ++engineRequestIdRef.current;
+
+      const transcript = await new Promise<Transcript>((resolve, reject) => {
+        const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
+          const msg = event.data;
+
+          if (msg.id !== requestId) {
+            return;
+          }
+
+          if (msg.type === 'progress') {
+            const { stage, status } = msg.event;
+            setEngineProgress((current) => ({ ...current, [stage]: status }));
+            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
+            return;
+          }
+
+          if (msg.type === 'log') {
+            setEngineLog((current) => [...current, msg.line]);
+            return;
+          }
+
+          if (msg.type === 'bar') {
+            setEngineBarValue(msg.value);
+            return;
+          }
+
+          if (msg.type === 'live-transcript') {
+            setLiveTranscriptSegments(msg.segments);
+            return;
+          }
+
+          worker.removeEventListener('message', handleMessage);
+
+          if (msg.ok) {
+            if (msg.mode !== 'transcription') {
+              reject(new Error('Worker returned an unexpected engine result.'));
+              return;
+            }
+
+            setLiveTranscriptSegments(msg.transcript.segments);
+            resolve(msg.transcript);
+          } else {
+            reject(new Error(msg.error));
+          }
+        };
+
+        worker.addEventListener('message', handleMessage);
+        const request: EngineWorkerRequest = {
+          id: requestId,
+          mode: 'transcription',
+          fileName: selectedFile.name,
+          audio: samples,
+          selectedModels: { whisper: selectedEngineModels.whisper },
+          useWebGpu: webGpuSupport === 'supported',
+          whisperDtype: whisperQuantization,
+        };
+        worker.postMessage(request, [samples.buffer]);
+      });
+
+      setTranscriptionResult(transcript);
+      setEngineStatus('idle');
+      setEngineMessage(`Transcription completed for ${selectedFile.name}.`);
+    } catch (error) {
+      setEngineStatus('error');
+      setEngineMessage(
+        error instanceof Error ? error.message : 'Transcription failed.',
+      );
+    }
+  }
+
+  function getActiveModelVersion(
+    model: ManagedModel,
+  ): ModelVersionManifestEntry | undefined {
+    return modelVersions.find(
+      (version) => version.model === model && version.active,
+    );
   }
 
   const activeModelCount = MODEL_DOWNLOAD_TARGETS.filter(
     (target) => getActiveModelVersion(target.model) !== undefined,
   ).length;
   const downloadPercent = downloadProgress?.totalBytes
-    ? Math.min(100, Math.round((downloadProgress.loadedBytes / downloadProgress.totalBytes) * 100))
+    ? Math.min(
+        100,
+        Math.round(
+          (downloadProgress.loadedBytes / downloadProgress.totalBytes) * 100,
+        ),
+      )
     : null;
 
   return (
@@ -1191,6 +1730,7 @@ export function App() {
           {[
             ['models', 'Models', `${activeModelCount}/3 active`],
             ['recordings', 'Recordings', `${files.length} saved`],
+            ['transcription', 'Transcription', engineStatus],
             ['engine', 'Engine', engineStatus],
           ].map(([page, label, detail]) => (
             <button
@@ -1214,14 +1754,18 @@ export function App() {
               ? 'Prepare local models'
               : activePage === 'recordings'
                 ? 'Capture meeting audio'
-                : 'Run the engine pipeline'}
+                : activePage === 'transcription'
+                  ? 'Run transcription only'
+                  : 'Run the engine pipeline'}
           </h1>
           <p>
             {activePage === 'models'
               ? 'Search Hugging Face, download model files, and activate them in OPFS before processing meetings.'
               : activePage === 'recordings'
                 ? 'Record microphone audio directly into OPFS and keep a small local library for engine testing.'
-                : 'Select a saved recording and run transcription, diarization, and speaker naming orchestration.'}
+                : activePage === 'transcription'
+                  ? 'Select a saved recording and run just the Whisper transcription engine with live segment updates.'
+                  : 'Select a saved recording and run transcription, diarization, and speaker naming orchestration.'}
           </p>
         </header>
 
@@ -1247,35 +1791,93 @@ export function App() {
                 <p className={styles.label}>OPFS/models</p>
                 <h2>Model search</h2>
               </div>
-              <span>{modelVersions.length} version{modelVersions.length === 1 ? '' : 's'}</span>
+              <span>
+                {modelVersions.length} version
+                {modelVersions.length === 1 ? '' : 's'}
+              </span>
             </div>
             <p className={styles.message}>{modelMessage}</p>
+
+            {modelVersions.length === 0 ? (
+              <p className={styles.empty}>No models downloaded yet.</p>
+            ) : (
+              <div className={styles.downloadedModels}>
+                <div className={styles.listHeader}>
+                  <div>
+                    <p className={styles.label}>Downloaded</p>
+                    <h3>Stored model versions</h3>
+                  </div>
+                  <span>
+                    {modelVersions.length} version
+                    {modelVersions.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <ul className={styles.modelVersionList}>
+                  {modelVersions.map((version) => (
+                    <li key={`${version.model}-${version.version}`}>
+                      <div>
+                        <strong>{getModelVersionTitle(version)}</strong>
+                        <span>{getModelVersionDetail(version)}</span>
+                        <span>
+                          {version.model}
+                          {version.active ? ' | active' : ''}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.dangerButton}
+                        onClick={() => void handleRemoveModelVersion(version)}
+                        disabled={downloadingModel !== null}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className={styles.directDownloads}>
               <div>
                 <p className={styles.label}>Direct ONNX downloads</p>
                 <h3>Whisper presets</h3>
                 <p>
-                  These use Xenova Whisper ONNX repositories and download the encoder,
-                  merged decoder, tokenizer, and config files into the active Whisper slot.
+                  These use Xenova Whisper ONNX repositories and download the
+                  encoder, merged decoder, tokenizer, and config files into the
+                  active Whisper slot.
                 </p>
               </div>
               <div className={styles.presetGrid}>
-                {WHISPER_ONNX_DOWNLOADS.map((download) => (
-                  <article key={download.id}>
-                    <strong>{download.label}</strong>
-                    <span>{download.id}</span>
-                    <span>{formatOptionalBytes(getKnownDownloadSize(download))}</span>
-                    <p>{download.description}</p>
-                    <button
-                      type="button"
-                      onClick={() => void handleDownloadDirectModel(download)}
-                      disabled={downloadingModel !== null}
-                    >
-                      {downloadingModel === 'whisper' ? 'Downloading...' : 'Download ONNX'}
-                    </button>
-                  </article>
-                ))}
+                {WHISPER_ONNX_DOWNLOADS.map((download) => {
+                  const downloadedVersion = getDirectDownloadVersion(download);
+
+                  return (
+                    <article key={getDirectDownloadKey(download)}>
+                      <strong>{download.label}</strong>
+                      <span>{download.id}</span>
+                      <span>{formatBytes(getKnownDownloadSize(download))}</span>
+                      {downloadedVersion !== undefined ? (
+                        <span className={styles.downloadedBadge}>
+                          downloaded
+                        </span>
+                      ) : null}
+                      <p>{download.description}</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadDirectModel(download)}
+                        disabled={
+                          downloadingModel !== null || downloadedVersion !== undefined
+                        }
+                      >
+                        {downloadedVersion !== undefined
+                          ? 'Downloaded'
+                          : downloadingModel === 'whisper'
+                            ? 'Downloading...'
+                            : 'Download ONNX'}
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             </div>
 
@@ -1284,26 +1886,42 @@ export function App() {
                 <p className={styles.label}>Direct Pyannote ONNX downloads</p>
                 <h3>Token-free diarization building blocks</h3>
                 <p>
-                  These community ONNX exports do not require a Hugging Face token. Download
-                  segmentation and embedding models to prepare a local diarization pipeline.
+                  These community ONNX exports do not require a Hugging Face
+                  token. Download segmentation and embedding models to prepare a
+                  local diarization pipeline.
                 </p>
               </div>
               <div className={styles.presetGrid}>
-                {PYANNOTE_DOWNLOADS.map((download) => (
-                  <article key={download.id}>
-                    <strong>{download.label}</strong>
-                    <span>{download.id}</span>
-                    <span>{formatOptionalBytes(getKnownDownloadSize(download))}</span>
-                    <p>{download.description}</p>
-                    <button
-                      type="button"
-                      onClick={() => void handleDownloadDirectModel(download)}
-                      disabled={downloadingModel !== null}
-                    >
-                      {downloadingModel === 'pyannote' ? 'Downloading...' : 'Download Pyannote'}
-                    </button>
-                  </article>
-                ))}
+                {PYANNOTE_DOWNLOADS.map((download) => {
+                  const downloadedVersion = getDirectDownloadVersion(download);
+
+                  return (
+                    <article key={getDirectDownloadKey(download)}>
+                      <strong>{download.label}</strong>
+                      <span>{download.id}</span>
+                      <span>{formatBytes(getKnownDownloadSize(download))}</span>
+                      {downloadedVersion !== undefined ? (
+                        <span className={styles.downloadedBadge}>
+                          downloaded
+                        </span>
+                      ) : null}
+                      <p>{download.description}</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadDirectModel(download)}
+                        disabled={
+                          downloadingModel !== null || downloadedVersion !== undefined
+                        }
+                      >
+                        {downloadedVersion !== undefined
+                          ? 'Downloaded'
+                          : downloadingModel === 'pyannote'
+                            ? 'Downloading...'
+                            : 'Download Pyannote'}
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             </div>
 
@@ -1312,26 +1930,42 @@ export function App() {
                 <p className={styles.label}>Direct Gemma 4 downloads</p>
                 <h3>Official and quantized google/gemma-4 presets</h3>
                 <p>
-                  These direct buttons include official Google BF16 safetensors plus public
-                  quantized GGUF/ONNX builds based on the matching google/gemma-4 models.
+                  These direct buttons include official Google BF16 safetensors
+                  plus public quantized GGUF/ONNX builds based on the matching
+                  google/gemma-4 models.
                 </p>
               </div>
               <div className={styles.presetGrid}>
-                {GEMMA_DOWNLOADS.map((download) => (
-                  <article key={download.id}>
-                    <strong>{download.label}</strong>
-                    <span>{download.id}</span>
-                    <span>{formatOptionalBytes(getKnownDownloadSize(download))}</span>
-                    <p>{download.description}</p>
-                    <button
-                      type="button"
-                      onClick={() => void handleDownloadDirectModel(download)}
-                      disabled={downloadingModel !== null}
-                    >
-                      {downloadingModel === 'gemma4' ? 'Downloading...' : 'Download Gemma'}
-                    </button>
-                  </article>
-                ))}
+                {GEMMA_DOWNLOADS.map((download) => {
+                  const downloadedVersion = getDirectDownloadVersion(download);
+
+                  return (
+                    <article key={getDirectDownloadKey(download)}>
+                      <strong>{download.label}</strong>
+                      <span>{download.id}</span>
+                      <span>{formatBytes(getKnownDownloadSize(download))}</span>
+                      {downloadedVersion !== undefined ? (
+                        <span className={styles.downloadedBadge}>
+                          downloaded
+                        </span>
+                      ) : null}
+                      <p>{download.description}</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadDirectModel(download)}
+                        disabled={
+                          downloadingModel !== null || downloadedVersion !== undefined
+                        }
+                      >
+                        {downloadedVersion !== undefined
+                          ? 'Downloaded'
+                          : downloadingModel === 'gemma4'
+                            ? 'Downloading...'
+                            : 'Download Gemma'}
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             </div>
 
@@ -1345,7 +1979,12 @@ export function App() {
                     <div>
                       <strong>{target.label}</strong>
                       <span>{target.description}</span>
-                      <span>Active: {activeModel === undefined ? 'none' : activeModel.version}</span>
+                      <span>
+                        Active:{' '}
+                        {activeModel === undefined
+                          ? 'none'
+                          : getModelVersionTitle(activeModel)}
+                      </span>
                     </div>
                     <div className={styles.searchRow}>
                       <input
@@ -1353,7 +1992,12 @@ export function App() {
                         type="search"
                         placeholder={target.defaultSearch}
                         value={search.query}
-                        onChange={(event) => handleModelQueryChange(target.model, event.target.value)}
+                        onChange={(event) =>
+                          handleModelQueryChange(
+                            target.model,
+                            event.target.value,
+                          )
+                        }
                       />
                       <button
                         type="button"
@@ -1368,23 +2012,46 @@ export function App() {
                       <ul className={styles.modelResults}>
                         {search.results.map((result) => {
                           const files = getDownloadableFiles(result);
-                          const selectedFile = search.selectedFiles[result.id] ?? files[0] ?? '';
-                          const selectedFileUrl = selectedFile.length === 0
-                            ? null
-                            : buildHuggingFaceDownloadUrl(result.id, selectedFile);
+                          const selectedFile =
+                            search.selectedFiles[result.id] ?? files[0] ?? '';
+                          const selectedFileUrl =
+                            selectedFile.length === 0
+                              ? null
+                              : buildHuggingFaceDownloadUrl(
+                                  result.id,
+                                  selectedFile,
+                                );
+                          const downloadedVersion =
+                            selectedFile.length === 0
+                              ? undefined
+                              : getSearchDownloadVersion(
+                                  target.model,
+                                  result.id,
+                                  selectedFile,
+                                );
 
                           return (
                             <li key={result.id}>
                               <div>
                                 <strong>{result.id}</strong>
                                 <span>
-                                  {(result.downloads ?? 0).toLocaleString()} downloads | {(result.likes ?? 0).toLocaleString()} likes
+                                  {(result.downloads ?? 0).toLocaleString()}{' '}
+                                  downloads |{' '}
+                                  {(result.likes ?? 0).toLocaleString()} likes
                                 </span>
                                 <span>
-                                  Selected file: {selectedFileUrl === null
+                                  Selected file:{' '}
+                                  {selectedFileUrl === null
                                     ? 'none'
-                                    : formatOptionalBytes(getKnownFileSize(selectedFileUrl))}
+                                    : formatOptionalBytes(
+                                        getKnownFileSize(selectedFileUrl),
+                                      )}
                                 </span>
+                                {downloadedVersion !== undefined ? (
+                                  <span className={styles.downloadedBadge}>
+                                    downloaded
+                                  </span>
+                                ) : null}
                               </div>
                               <select
                                 aria-label={`${result.id} file`}
@@ -1398,17 +2065,29 @@ export function App() {
                                 }
                               >
                                 {files.map((fileName) => (
-                                  <option key={`${result.id}-${fileName}`} value={fileName}>
+                                  <option
+                                    key={`${result.id}-${fileName}`}
+                                    value={fileName}
+                                  >
                                     {fileName}
                                   </option>
                                 ))}
                               </select>
                               <button
                                 type="button"
-                                onClick={() => void handleDownloadModel(target, result)}
-                                disabled={downloadingModel !== null}
+                                onClick={() =>
+                                  void handleDownloadModel(target, result)
+                                }
+                                disabled={
+                                  downloadingModel !== null ||
+                                  downloadedVersion !== undefined
+                                }
                               >
-                                {downloadingModel === target.model ? 'Downloading...' : 'Download & Activate'}
+                                {downloadedVersion !== undefined
+                                  ? 'Downloaded'
+                                  : downloadingModel === target.model
+                                    ? 'Downloading...'
+                                    : 'Download & Activate'}
                               </button>
                             </li>
                           );
@@ -1436,7 +2115,10 @@ export function App() {
 
               <label className={styles.uploadBox}>
                 <span>Upload recordings</span>
-                <strong>Import MP3, WAV, M4A, WebM, or OGG files into OPFS/audio-files.</strong>
+                <strong>
+                  Import MP3, WAV, M4A, WebM, or OGG files into
+                  OPFS/audio-files.
+                </strong>
                 <input
                   type="file"
                   accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg"
@@ -1445,24 +2127,44 @@ export function App() {
                     void handleUploadRecordings(event.target.files);
                     event.currentTarget.value = '';
                   }}
-                  disabled={status === 'idle' || status === 'recording' || status === 'saving'}
+                  disabled={
+                    status === 'idle' ||
+                    status === 'recording' ||
+                    status === 'saving'
+                  }
                 />
               </label>
 
               <div className={styles.actions}>
-                <button type="button" onClick={handleStartRecording} disabled={status !== 'ready'}>
+                <button
+                  type="button"
+                  onClick={handleStartRecording}
+                  disabled={status !== 'ready'}
+                >
                   Start Recording
                 </button>
-                <button type="button" onClick={handleStopRecording} disabled={status !== 'recording'}>
+                <button
+                  type="button"
+                  onClick={handleStopRecording}
+                  disabled={status !== 'recording'}
+                >
                   Stop & Save
                 </button>
-                <button type="button" onClick={handleCancelRecording} disabled={status !== 'recording'}>
+                <button
+                  type="button"
+                  onClick={handleCancelRecording}
+                  disabled={status !== 'recording'}
+                >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={() => void refreshFiles()}
-                  disabled={status === 'idle' || status === 'recording' || status === 'saving'}
+                  disabled={
+                    status === 'idle' ||
+                    status === 'recording' ||
+                    status === 'saving'
+                  }
                 >
                   Refresh Files
                 </button>
@@ -1470,7 +2172,8 @@ export function App() {
 
               {lastRecording !== null ? (
                 <p className={styles.saved}>
-                  Last saved: <strong>{lastRecording.fileName}</strong> ({formatBytes(lastRecording.size)})
+                  Last saved: <strong>{lastRecording.fileName}</strong> (
+                  {formatBytes(lastRecording.size)})
                 </p>
               ) : null}
             </section>
@@ -1481,7 +2184,9 @@ export function App() {
                   <p className={styles.label}>OPFS/audio-files</p>
                   <h2>Stored recordings</h2>
                 </div>
-                <span>{files.length} file{files.length === 1 ? '' : 's'}</span>
+                <span>
+                  {files.length} file{files.length === 1 ? '' : 's'}
+                </span>
               </div>
 
               {files.length === 0 ? (
@@ -1492,7 +2197,10 @@ export function App() {
                     <li key={`${file.name}-${file.updatedAt}`}>
                       <div>
                         <strong>{file.name}</strong>
-                        <span>{file.type} | {formatBytes(file.size)} | {formatDate(file.updatedAt)}</span>
+                        <span>
+                          {file.type} | {formatBytes(file.size)} |{' '}
+                          {formatDate(file.updatedAt)}
+                        </span>
                       </div>
                       <audio controls src={file.url} />
                     </li>
@@ -1501,6 +2209,133 @@ export function App() {
               )}
             </section>
           </>
+        ) : null}
+
+        {activePage === 'transcription' ? (
+          <section className={styles.panel}>
+            <div className={styles.listHeader}>
+              <div>
+                <p className={styles.label}>Transcription</p>
+                <h2>Run Whisper only</h2>
+              </div>
+              <span data-state={engineStatus}>{engineStatus}</span>
+            </div>
+            <p className={styles.message}>{engineMessage}</p>
+
+            <div className={styles.runtimeStatus} data-state={webGpuSupport}>
+              <strong>{getWebGpuSupportLabel(webGpuSupport)}</strong>
+              <span>
+                {webGpuSupport === 'supported'
+                  ? 'Whisper is pinned to WASM; current q8 ONNX exports fail in ORT Web.'
+                  : 'Whisper will run on the WASM backend.'}
+              </span>
+            </div>
+
+            <div className={styles.engineModelGrid}>
+              <label className={styles.engineModelPicker}>
+                <span>Whisper precision</span>
+                <select
+                  value={whisperQuantization}
+                  onChange={(event) =>
+                    setWhisperQuantization(
+                      event.target.value as WhisperQuantization,
+                    )
+                  }
+                  disabled={engineStatus === 'processing'}
+                >
+                  <option value="fp32">Full precision fp32 (WASM)</option>
+                </select>
+              </label>
+
+              <label className={styles.engineModelPicker}>
+                <span>Whisper model</span>
+                <select
+                  value={selectedEngineModels.whisper}
+                  onChange={(event) =>
+                    setSelectedEngineModels((current) => ({
+                      ...current,
+                      whisper: event.target.value,
+                    }))
+                  }
+                  disabled={
+                    engineStatus === 'processing' ||
+                    modelVersions.filter(
+                      (version) => version.model === 'whisper',
+                    ).length === 0
+                  }
+                >
+                  <option value="">
+                    {modelVersions.some(
+                      (version) => version.model === 'whisper',
+                    )
+                      ? 'Select a model version'
+                      : 'No downloaded versions'}
+                  </option>
+                  {modelVersions
+                    .filter((version) => version.model === 'whisper')
+                    .map((version) => (
+                      <option
+                        key={`whisper-transcription-${version.version}`}
+                        value={version.version}
+                      >
+                        {getModelVersionTitle(version)}
+                        {version.active ? ' (active)' : ''}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
+
+            <ul className={styles.engineProgress}>
+              <li data-status={engineProgress.transcription ?? 'pending'}>
+                <span>Transcription</span>
+                <small>{engineProgress.transcription ?? 'pending'}</small>
+              </li>
+            </ul>
+
+            <div className={styles.engineControls}>
+              <select
+                value={selectedAudioName}
+                onChange={(event) => setSelectedAudioName(event.target.value)}
+                disabled={files.length === 0 || engineStatus === 'processing'}
+              >
+                <option value="">Select recording</option>
+                {files.map((file) => (
+                  <option
+                    key={`${file.name}-transcription-option`}
+                    value={file.name}
+                  >
+                    {file.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void handleRunTranscription()}
+                disabled={
+                  selectedAudioName.length === 0 ||
+                  engineStatus === 'processing'
+                }
+              >
+                Transcribe Only
+              </button>
+            </div>
+
+            {transcriptionResult !== null ? (
+              <div className={styles.transcriptResult}>
+                <h3>Transcript</h3>
+                <p>{transcriptionResult.text}</p>
+                <ul>
+                  {transcriptionResult.segments.map((segment, index) => (
+                    <li key={`${segment.startSeconds}-${index}`}>
+                      <strong>{formatTimestamp(segment.startSeconds)}</strong>
+                      <span>{segment.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </section>
         ) : null}
 
         {activePage === 'engine' ? (
@@ -1513,6 +2348,92 @@ export function App() {
               <span data-state={engineStatus}>{engineStatus}</span>
             </div>
             <p className={styles.message}>{engineMessage}</p>
+
+            <div className={styles.runtimeStatus} data-state={webGpuSupport}>
+              <strong>{getWebGpuSupportLabel(webGpuSupport)}</strong>
+              <span>
+                {webGpuSupport === 'supported'
+                  ? 'Whisper is pinned to WASM; current q8 ONNX exports fail in ORT Web.'
+                  : 'Whisper will run on the WASM backend.'}
+              </span>
+            </div>
+
+            <label className={styles.engineModelPicker}>
+              <span>Whisper precision</span>
+              <select
+                value={whisperQuantization}
+                onChange={(event) =>
+                  setWhisperQuantization(
+                    event.target.value as WhisperQuantization,
+                  )
+                }
+                disabled={engineStatus === 'processing'}
+              >
+                <option value="fp32">Full precision fp32 (WASM)</option>
+              </select>
+            </label>
+
+            <ul className={styles.engineProgress}>
+              {(
+                [
+                  ['transcription', 'Transcription'],
+                  ['diarization', 'Diarization'],
+                  ['speaker-naming', 'Speaker naming'],
+                ] as const
+              ).map(([stage, label]) => (
+                <li
+                  key={stage}
+                  data-status={engineProgress[stage] ?? 'pending'}
+                >
+                  <span>{label}</span>
+                  <small>{engineProgress[stage] ?? 'pending'}</small>
+                </li>
+              ))}
+            </ul>
+
+            <div className={styles.engineModelGrid}>
+              {MODEL_DOWNLOAD_TARGETS.map((target) => {
+                const versions = modelVersions.filter(
+                  (version) => version.model === target.model,
+                );
+
+                return (
+                  <label
+                    key={target.model}
+                    className={styles.engineModelPicker}
+                  >
+                    <span>{target.label} model</span>
+                    <select
+                      value={selectedEngineModels[target.model]}
+                      onChange={(event) =>
+                        setSelectedEngineModels((current) => ({
+                          ...current,
+                          [target.model]: event.target.value,
+                        }))
+                      }
+                      disabled={
+                        engineStatus === 'processing' || versions.length === 0
+                      }
+                    >
+                      <option value="">
+                        {versions.length === 0
+                          ? 'No downloaded versions'
+                          : 'Select a model version'}
+                      </option>
+                      {versions.map((version) => (
+                        <option
+                          key={`${target.model}-${version.version}`}
+                          value={version.version}
+                        >
+                          {getModelVersionTitle(version)}
+                          {version.active ? ' (active)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
 
             <div className={styles.engineControls}>
               <select
@@ -1530,7 +2451,10 @@ export function App() {
               <button
                 type="button"
                 onClick={() => void handleRunEngine()}
-                disabled={selectedAudioName.length === 0 || engineStatus === 'processing'}
+                disabled={
+                  selectedAudioName.length === 0 ||
+                  engineStatus === 'processing'
+                }
               >
                 Run Engine
               </button>
@@ -1554,8 +2478,110 @@ export function App() {
         ) : null}
       </section>
 
+      {engineDialogOpen ? (
+        <div
+          className={styles.downloadOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Transcription progress"
+        >
+          <section className={styles.downloadDialog}>
+            <div className={styles.listHeader}>
+              <div>
+                <p className={styles.label}>
+                  {engineDialogMode === 'transcription'
+                    ? 'Transcription'
+                    : 'Engine'}
+                </p>
+                <h2>
+                  {engineDialogMode === 'transcription'
+                    ? 'Transcribing'
+                    : 'Processing'}{' '}
+                  {selectedAudioName}
+                </h2>
+              </div>
+              <span data-state={engineStatus}>{engineStatus}</span>
+            </div>
+
+            <ul className={styles.engineProgress}>
+              {(
+                [
+                  ['transcription', 'Transcription'],
+                  ['diarization', 'Diarization'],
+                  ['speaker-naming', 'Speaker naming'],
+                ] as const
+              ).map(([stage, label]) =>
+                engineDialogMode === 'transcription' &&
+                stage !== 'transcription' ? null : (
+                  <li
+                    key={stage}
+                    data-status={engineProgress[stage] ?? 'pending'}
+                  >
+                    <span>{label}</span>
+                    <small>{engineProgress[stage] ?? 'pending'}</small>
+                  </li>
+                ),
+              )}
+            </ul>
+
+            <div className={styles.progressTrack} aria-hidden="true">
+              <div
+                data-indeterminate={
+                  engineBarValue === null && engineStatus === 'processing'
+                }
+                style={
+                  engineBarValue !== null
+                    ? { width: `${engineBarValue}%` }
+                    : undefined
+                }
+              />
+            </div>
+
+            <div className={styles.liveTranscript}>
+              <div className={styles.liveTranscriptHeader}>
+                <strong>Live transcript</strong>
+                <span>{liveTranscriptSegments.length} segments</span>
+              </div>
+              {liveTranscriptSegments.length === 0 ? (
+                <p className={styles.empty}>Waiting for speech...</p>
+              ) : (
+                <div className={styles.liveTranscriptBody}>
+                  {liveTranscriptSegments.map((segment, index) => (
+                    <p key={`${segment.startSeconds}-${index}`}>
+                      <time>{formatTimestamp(segment.startSeconds)}</time>
+                      <span>{segment.text}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div ref={engineLogRef} className={styles.engineLog}>
+              {engineLog.length === 0 ? (
+                <p className={styles.empty}>Waiting for output...</p>
+              ) : (
+                engineLog.map((line, index) => (
+                  <p key={`${index}-${line.slice(0, 32)}`}>{line}</p>
+                ))
+              )}
+            </div>
+
+            {engineStatus !== 'processing' ? (
+              <button type="button" onClick={() => setEngineDialogOpen(false)}>
+                Close
+              </button>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
       {downloadProgress !== null ? (
-        <div className={styles.downloadOverlay} role="dialog" aria-modal="true" aria-label="Download progress">
+        <div
+          className={styles.downloadOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Download progress"
+        >
           <section className={styles.downloadDialog}>
             <div className={styles.listHeader}>
               <div>
@@ -1565,16 +2591,21 @@ export function App() {
               <span>{downloadProgress.status}</span>
             </div>
             <p className={styles.message}>
-              File {downloadProgress.fileIndex} of {downloadProgress.fileCount}: {downloadProgress.currentFile}
+              File {downloadProgress.fileIndex} of {downloadProgress.fileCount}:{' '}
+              {downloadProgress.currentFile}
             </p>
             <div className={styles.progressTrack}>
               <div style={{ width: `${downloadPercent ?? 8}%` }} />
             </div>
             <p className={styles.progressMeta}>
-              {formatBytes(downloadProgress.loadedBytes)} / {downloadProgress.totalBytes === null ? 'unknown' : formatBytes(downloadProgress.totalBytes)}
+              {formatBytes(downloadProgress.loadedBytes)} /{' '}
+              {downloadProgress.totalBytes === null
+                ? 'unknown'
+                : formatBytes(downloadProgress.totalBytes)}
               {downloadPercent === null ? '' : ` (${downloadPercent}%)`}
             </p>
-            {downloadProgress.status === 'complete' || downloadProgress.status === 'error' ? (
+            {downloadProgress.status === 'complete' ||
+            downloadProgress.status === 'error' ? (
               <button type="button" onClick={() => setDownloadProgress(null)}>
                 Close
               </button>

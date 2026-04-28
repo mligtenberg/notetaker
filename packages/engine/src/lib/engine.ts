@@ -1,77 +1,15 @@
-export type MeetingAudio = Blob | ArrayBuffer | Uint8Array;
-
-export interface Meeting {
-  audio: MeetingAudio;
-  id?: string;
-  title?: string;
-  startedAt?: Date;
-  metadata?: Record<string, unknown>;
-}
-
-export interface TranscriptSegment {
-  text: string;
-  startSeconds: number;
-  endSeconds: number;
-}
-
-export interface Transcript {
-  text: string;
-  segments: TranscriptSegment[];
-}
-
-export interface SpeakerTurn {
-  speaker: string;
-  startSeconds: number;
-  endSeconds: number;
-}
-
-export interface SpeakerTranscriptSegment extends TranscriptSegment {
-  speaker: string;
-  speakerName: string;
-}
-
-export interface SpeakerNameGuess {
-  speaker: string;
-  name: string | null | undefined;
-}
-
-export interface MeetingNotes {
-  meeting: Meeting;
-  transcript: Transcript;
-  speakerTurns: SpeakerTurn[];
-  speakerNames: Record<string, string>;
-  segments: SpeakerTranscriptSegment[];
-}
-
-export interface TranscriptionEngine {
-  transcribe(meeting: Meeting): Promise<Transcript>;
-}
-
-export interface SpeakerDiarizationEngine {
-  diarize(meeting: Meeting): Promise<SpeakerTurn[]>;
-}
-
-export interface SpeakerNamingModel {
-  nameSpeakers(input: SpeakerNamingInput): Promise<SpeakerNameGuess[]>;
-}
-
-export interface SpeakerNamingInput {
-  meeting: Meeting;
-  transcript: string;
-  segments: Omit<SpeakerTranscriptSegment, 'speakerName'>[];
-  speakers: string[];
-}
-
-export interface EngineDependencies {
-  transcription: TranscriptionEngine;
-  diarization: SpeakerDiarizationEngine;
-  speakerNaming: SpeakerNamingModel;
-}
+import type { EngineDependencies } from './engine-dependencies';
+import type { ProcessMeetingOptions } from './process-meeting-options';
+import type { SpeakerNameGuess } from './speaker-name-guess';
+import type { Meeting } from './models/meeting';
+import type { MeetingNotes } from './models/meeting-notes';
+import type { SpeakerTurn } from './models/speaker-turn';
+import type { TranscriptSegment } from './models/transcript-segment';
 
 export class Engine {
-  readonly transcription: TranscriptionEngine;
-  readonly diarization: SpeakerDiarizationEngine;
-  readonly speakerNaming: SpeakerNamingModel;
+  readonly transcription: EngineDependencies['transcription'];
+  readonly diarization: EngineDependencies['diarization'];
+  readonly speakerNaming: EngineDependencies['speakerNaming'];
 
   constructor(dependencies: EngineDependencies) {
     this.transcription = dependencies.transcription;
@@ -79,10 +17,23 @@ export class Engine {
     this.speakerNaming = dependencies.speakerNaming;
   }
 
-  async processMeeting(meeting: Meeting): Promise<MeetingNotes> {
+  async processMeeting(
+    meeting: Meeting,
+    options: ProcessMeetingOptions = {},
+  ): Promise<MeetingNotes> {
+    const onProgress = options.onProgress ?? (() => undefined);
+
+    onProgress({ stage: 'transcription', status: 'started' });
+    onProgress({ stage: 'diarization', status: 'started' });
     const [transcript, speakerTurns] = await Promise.all([
-      this.transcription.transcribe(meeting),
-      this.diarization.diarize(meeting),
+      this.transcription.transcribe(meeting).then((result) => {
+        onProgress({ stage: 'transcription', status: 'completed' });
+        return result;
+      }),
+      this.diarization.diarize(meeting).then((result) => {
+        onProgress({ stage: 'diarization', status: 'completed' });
+        return result;
+      }),
     ]);
     const normalizedSpeakerTurns = this.#normalizeSpeakerTurns(speakerTurns);
     const segments = transcript.segments.map((segment) => ({
@@ -90,6 +41,7 @@ export class Engine {
       speaker: this.#findSpeakerForSegment(segment, normalizedSpeakerTurns),
     }));
     const speakers = [...new Set(segments.map((segment) => segment.speaker))];
+    onProgress({ stage: 'speaker-naming', status: 'started' });
     const speakerNames = this.#resolveSpeakerNames(
       speakers,
       await this.speakerNaming.nameSpeakers({
@@ -99,6 +51,7 @@ export class Engine {
         speakers,
       }),
     );
+    onProgress({ stage: 'speaker-naming', status: 'completed' });
 
     return {
       meeting,

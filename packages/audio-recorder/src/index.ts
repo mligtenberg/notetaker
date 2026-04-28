@@ -1,1 +1,1 @@
-export * from './lib/audio-recorder.js';
+export * from './lib/audio-recorder';
