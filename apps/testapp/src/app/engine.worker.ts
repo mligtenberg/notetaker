@@ -8,6 +8,7 @@ import {
   type SpeakerNameGuess,
   type SpeakerNamingInput,
   type SpeakerNamingModel,
+  type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
 import { FileSystem } from '@notetaker/filesystem';
@@ -88,12 +89,13 @@ async function requireModelVersion(
 
 export interface EngineWorkerRequest {
   id: number;
-  mode?: 'engine' | 'transcription';
+  mode?: 'engine' | 'transcription' | 'diarization';
   fileName: string;
   audio: Float32Array;
   selectedModels?: WorkerModelSelections;
   useWebGpu?: boolean;
   whisperDtype?: WhisperDtype;
+  numSpeakers?: number | null;
 }
 
 export type EngineWorkerResponse =
@@ -120,6 +122,13 @@ export type EngineWorkerResponse =
       mode: 'transcription';
       transcript: Transcript;
     }
+  | {
+      id: number;
+      type: 'result';
+      ok: true;
+      mode: 'diarization';
+      turns: SpeakerTurn[];
+    }
   | { id: number; type: 'result'; ok: false; error: string };
 
 let modelManagerPromise: Promise<ModelManager> | null = null;
@@ -141,6 +150,7 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
     selectedModels = {},
     useWebGpu = false,
     whisperDtype = 'q8',
+    numSpeakers = null,
   } = event.data;
 
 
@@ -201,6 +211,42 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
           ok: true,
           mode: 'transcription',
           transcript,
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(response);
+        return;
+      }
+
+      if (mode === 'diarization') {
+        const progress: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'diarization', status: 'started' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(progress);
+        const diarization = new ActiveModelSpeakerDiarizationEngine({
+          modelManager,
+          selectedModels,
+          numSpeakers,
+          onLog: log,
+          onProgress: emitBar,
+        });
+        const turns = await diarization.diarize({
+          id: fileName,
+          title: fileName,
+          audio,
+        });
+        const completed: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'diarization', status: 'completed' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(completed);
+        const response: EngineWorkerResponse = {
+          id,
+          type: 'result',
+          ok: true,
+          mode: 'diarization',
+          turns,
         };
         (self as DedicatedWorkerGlobalScope).postMessage(response);
         return;

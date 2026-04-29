@@ -7,6 +7,7 @@ import {
   type EngineProgressEvent,
   type EngineStage,
   type MeetingNotes,
+  type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
 import { FileSystem } from '@notetaker/filesystem';
@@ -39,7 +40,7 @@ interface LiveTranscriptSegment {
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
-type AppPage = 'models' | 'recordings' | 'transcription' | 'engine';
+type AppPage = 'models' | 'recordings' | 'transcription' | 'diarization' | 'engine';
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type WhisperQuantization = 'fp32';
 type IterableDirectoryHandle = FileSystemDirectoryHandle & {
@@ -207,49 +208,55 @@ const WHISPER_ONNX_DOWNLOADS: DirectModelDownload[] = [
     },
   ),
 ];
-const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
-  {
-    id: 'onnx-community/pyannote-segmentation-3.0',
-    label: 'Segmentation 3.0 ONNX',
-    description:
-      'Token-free ONNX segmentation model for speech activity and speaker-change building blocks.',
+const PYANNOTE_REPO = 'onnx-community/pyannote-segmentation-3.0';
+const PYANNOTE_COMMON_FILES: [string, number][] = [
+  ['config.json', 408],
+  ['preprocessor_config.json', 158],
+];
+
+function createPyannoteDownload(
+  label: string,
+  description: string,
+  onnxFile: string,
+  onnxSize: number,
+): DirectModelDownload {
+  return {
+    id: PYANNOTE_REPO,
+    label,
+    description,
     model: 'pyannote',
-    files: (
-      [
-        ['config.json', 408],
-        ['preprocessor_config.json', 158],
-        ['onnx/model.onnx', 5986908],
-      ] as const
-    ).map(([path, size]) => ({
-      path,
-      url: buildHuggingFaceDownloadUrl(
-        'onnx-community/pyannote-segmentation-3.0',
+    files: ([...PYANNOTE_COMMON_FILES, [onnxFile, onnxSize]] as const).map(
+      ([path, size]) => ({
         path,
-      ),
-      type: path.endsWith('.onnx')
-        ? 'application/octet-stream'
-        : 'application/json',
-      size,
-    })),
-  },
-  {
-    id: 'deepghs/pyannote-embedding-onnx',
-    label: 'Embedding ONNX',
-    description:
-      'Token-free ONNX speaker embedding model for clustering speaker turns.',
-    model: 'pyannote',
-    files: (
-      [
-        ['model.onnx', 17631302],
-        ['README.md', 1033],
-      ] as const
-    ).map(([path, size]) => ({
-      path,
-      url: buildHuggingFaceDownloadUrl('deepghs/pyannote-embedding-onnx', path),
-      type: path.endsWith('.onnx') ? 'application/octet-stream' : 'text/plain',
-      size,
-    })),
-  },
+        url: buildHuggingFaceDownloadUrl(PYANNOTE_REPO, path),
+        type: path.endsWith('.onnx')
+          ? 'application/octet-stream'
+          : 'application/json',
+        size,
+      }),
+    ),
+  };
+}
+
+const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
+  createPyannoteDownload(
+    'Segmentation 3.0 FP32',
+    'Full-precision ONNX segmentation model (~5.7 MB). Best accuracy.',
+    'onnx/model.onnx',
+    5986908,
+  ),
+  createPyannoteDownload(
+    'Segmentation 3.0 Q8',
+    'Quantized ONNX segmentation model (~1.5 MB). Same accuracy, 4× smaller.',
+    'onnx/model_quantized.onnx',
+    1542308,
+  ),
+  createPyannoteDownload(
+    'Segmentation 3.0 INT8',
+    'INT8-quantized ONNX segmentation model (~1.5 MB). Equivalent to Q8.',
+    'onnx/model_int8.onnx',
+    1542304,
+  ),
 ];
 const GEMMA_DOWNLOADS: DirectModelDownload[] = [
   createDirectModelDownload({
@@ -808,6 +815,9 @@ export function App() {
   const [meetingNotes, setMeetingNotes] = useState<MeetingNotes | null>(null);
   const [transcriptionResult, setTranscriptionResult] =
     useState<Transcript | null>(null);
+  const [diarizationResult, setDiarizationResult] =
+    useState<SpeakerTurn[] | null>(null);
+  const [numSpeakersHint, setNumSpeakersHint] = useState<number | null>(null);
   const [engineDialogOpen, setEngineDialogOpen] = useState(false);
   const [engineDialogMode, setEngineDialogMode] = useState<
     'engine' | 'transcription'
@@ -1699,6 +1709,119 @@ function getSearchDownloadVersion(
     }
   }
 
+  async function handleRunDiarization() {
+    const selectedFile = files.find((file) => file.name === selectedAudioName);
+
+    if (selectedFile === undefined) {
+      setEngineMessage('Select a stored recording first.');
+      return;
+    }
+
+    if (selectedEngineModels.pyannote.length === 0) {
+      setEngineMessage('Download a Pyannote model first.');
+      return;
+    }
+
+    setEngineStatus('processing');
+    setEngineMessage(`Diarizing ${selectedFile.name}...`);
+    setEngineLog([`Starting diarization of ${selectedFile.name}.`]);
+    setEngineBarValue(null);
+    setEngineProgress({
+      transcription: undefined,
+      diarization: undefined,
+      'speaker-naming': undefined,
+    });
+    setDiarizationResult(null);
+
+    try {
+      const audioFile = await selectedFile.fileHandle.getFile();
+      setEngineLog((current) => [
+        ...current,
+        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+      ]);
+      const samples = await decodeAudioBlobToMonoFloat32(
+        audioFile,
+        WHISPER_SAMPLE_RATE,
+      );
+      setEngineLog((current) => [
+        ...current,
+        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Using Pyannote ${selectedEngineModels.pyannote}.`,
+      ]);
+
+      const worker = getEngineWorker();
+      const requestId = ++engineRequestIdRef.current;
+
+      const turns = await new Promise<SpeakerTurn[]>((resolve, reject) => {
+        const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
+          const msg = event.data;
+
+          if (msg.id !== requestId) {
+            return;
+          }
+
+          if (msg.type === 'progress') {
+            const { stage, status } = msg.event;
+            setEngineProgress((current) => ({ ...current, [stage]: status }));
+            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
+            return;
+          }
+
+          if (msg.type === 'log') {
+            setEngineLog((current) => [...current, msg.line]);
+            return;
+          }
+
+          if (msg.type === 'bar') {
+            setEngineBarValue(msg.value);
+            return;
+          }
+
+          if (msg.type === 'live-transcript') {
+            return;
+          }
+
+          worker.removeEventListener('message', handleMessage);
+
+          if (msg.ok) {
+            if (msg.mode !== 'diarization') {
+              reject(new Error('Worker returned an unexpected result.'));
+              return;
+            }
+
+            resolve(msg.turns);
+          } else {
+            reject(new Error(msg.error));
+          }
+        };
+
+        worker.addEventListener('message', handleMessage);
+        const request: EngineWorkerRequest = {
+          id: requestId,
+          mode: 'diarization',
+          fileName: selectedFile.name,
+          audio: samples,
+          selectedModels: { pyannote: selectedEngineModels.pyannote },
+          useWebGpu: webGpuSupport === 'supported',
+          whisperDtype: whisperQuantization,
+          numSpeakers: numSpeakersHint,
+        };
+        worker.postMessage(request, [samples.buffer]);
+      });
+
+      setDiarizationResult(turns);
+      setEngineStatus('idle');
+      setEngineMessage(
+        `Diarization completed: ${turns.length} speaker turn${turns.length === 1 ? '' : 's'} detected.`,
+      );
+    } catch (error) {
+      setEngineStatus('error');
+      setEngineMessage(
+        error instanceof Error ? error.message : 'Diarization failed.',
+      );
+    }
+  }
+
   function getActiveModelVersion(
     model: ManagedModel,
   ): ModelVersionManifestEntry | undefined {
@@ -1731,6 +1854,7 @@ function getSearchDownloadVersion(
             ['models', 'Models', `${activeModelCount}/3 active`],
             ['recordings', 'Recordings', `${files.length} saved`],
             ['transcription', 'Transcription', engineStatus],
+            ['diarization', 'Diarization', engineStatus],
             ['engine', 'Engine', engineStatus],
           ].map(([page, label, detail]) => (
             <button
@@ -1756,7 +1880,9 @@ function getSearchDownloadVersion(
                 ? 'Capture meeting audio'
                 : activePage === 'transcription'
                   ? 'Run transcription only'
-                  : 'Run the engine pipeline'}
+                  : activePage === 'diarization'
+                    ? 'Run diarization only'
+                    : 'Run the engine pipeline'}
           </h1>
           <p>
             {activePage === 'models'
@@ -1765,7 +1891,9 @@ function getSearchDownloadVersion(
                 ? 'Record microphone audio directly into OPFS and keep a small local library for engine testing.'
                 : activePage === 'transcription'
                   ? 'Select a saved recording and run just the Whisper transcription engine with live segment updates.'
-                  : 'Select a saved recording and run transcription, diarization, and speaker naming orchestration.'}
+                  : activePage === 'diarization'
+                    ? 'Select a saved recording and run just the Pyannote speaker diarization engine to inspect raw speaker turns.'
+                    : 'Select a saved recording and run transcription, diarization, and speaker naming orchestration.'}
           </p>
         </header>
 
@@ -2330,6 +2458,159 @@ function getSearchDownloadVersion(
                     <li key={`${segment.startSeconds}-${index}`}>
                       <strong>{formatTimestamp(segment.startSeconds)}</strong>
                       <span>{segment.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {activePage === 'diarization' ? (
+          <section className={styles.panel}>
+            <div className={styles.listHeader}>
+              <div>
+                <p className={styles.label}>Diarization</p>
+                <h2>Run Pyannote only</h2>
+              </div>
+              <span data-state={engineStatus}>{engineStatus}</span>
+            </div>
+            <p className={styles.message}>{engineMessage}</p>
+
+            <div className={styles.engineModelGrid}>
+              <label className={styles.engineModelPicker}>
+                <span>Pyannote model</span>
+                <select
+                  value={selectedEngineModels.pyannote}
+                  onChange={(event) =>
+                    setSelectedEngineModels((current) => ({
+                      ...current,
+                      pyannote: event.target.value,
+                    }))
+                  }
+                  disabled={
+                    engineStatus === 'processing' ||
+                    modelVersions.filter(
+                      (version) => version.model === 'pyannote',
+                    ).length === 0
+                  }
+                >
+                  <option value="">
+                    {modelVersions.some(
+                      (version) => version.model === 'pyannote',
+                    )
+                      ? 'Select a model version'
+                      : 'No downloaded versions'}
+                  </option>
+                  {modelVersions
+                    .filter((version) => version.model === 'pyannote')
+                    .map((version) => (
+                      <option
+                        key={`pyannote-diarization-${version.version}`}
+                        value={version.version}
+                      >
+                        {getModelVersionTitle(version)}
+                        {version.active ? ' (active)' : ''}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className={styles.engineModelPicker}>
+                <span>Number of speakers (optional)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  placeholder="Auto-detect"
+                  value={numSpeakersHint ?? ''}
+                  onChange={(event) => {
+                    const val = event.target.value;
+                    setNumSpeakersHint(val === '' ? null : Math.max(1, parseInt(val, 10)));
+                  }}
+                  disabled={engineStatus === 'processing'}
+                />
+              </label>
+            </div>
+
+            <ul className={styles.engineProgress}>
+              <li data-status={engineProgress.diarization ?? 'pending'}>
+                <span>Diarization</span>
+                <small>{engineProgress.diarization ?? 'pending'}</small>
+              </li>
+            </ul>
+
+            {engineBarValue !== null || engineStatus === 'processing' ? (
+              <div className={styles.progressTrack} aria-hidden="true">
+                <div
+                  data-indeterminate={
+                    engineBarValue === null && engineStatus === 'processing'
+                  }
+                  style={
+                    engineBarValue !== null
+                      ? { width: `${engineBarValue}%` }
+                      : undefined
+                  }
+                />
+              </div>
+            ) : null}
+
+            <div className={styles.engineControls}>
+              <select
+                value={selectedAudioName}
+                onChange={(event) => setSelectedAudioName(event.target.value)}
+                disabled={files.length === 0 || engineStatus === 'processing'}
+              >
+                <option value="">Select recording</option>
+                {files.map((file) => (
+                  <option
+                    key={`${file.name}-diarization-option`}
+                    value={file.name}
+                  >
+                    {file.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void handleRunDiarization()}
+                disabled={
+                  selectedAudioName.length === 0 ||
+                  engineStatus === 'processing'
+                }
+              >
+                Diarize Only
+              </button>
+            </div>
+
+            <div ref={engineLogRef} className={styles.engineLog}>
+              {engineLog.length === 0 ? (
+                <p className={styles.empty}>Waiting for output...</p>
+              ) : (
+                engineLog.map((line, index) => (
+                  <p key={`${index}-${line.slice(0, 32)}`}>{line}</p>
+                ))
+              )}
+            </div>
+
+            {diarizationResult !== null ? (
+              <div className={styles.transcriptResult}>
+                <h3>
+                  Speaker turns —{' '}
+                  {[...new Set(diarizationResult.map((t) => t.speaker))].length}{' '}
+                  speaker
+                  {[...new Set(diarizationResult.map((t) => t.speaker))].length === 1 ? '' : 's'},{' '}
+                  {diarizationResult.length} turn
+                  {diarizationResult.length === 1 ? '' : 's'}
+                </h3>
+                <ul>
+                  {diarizationResult.map((turn, index) => (
+                    <li key={`${turn.startSeconds}-${index}`}>
+                      <strong>{turn.speaker}</strong>
+                      <span>
+                        {formatTimestamp(turn.startSeconds)} →{' '}
+                        {formatTimestamp(turn.endSeconds)} (
+                        {(turn.endSeconds - turn.startSeconds).toFixed(1)}s)
+                      </span>
                     </li>
                   ))}
                 </ul>
