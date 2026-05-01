@@ -8,16 +8,44 @@ import type { TranscriptSegment } from './models/transcript-segment';
 import { ModelManager, type ManagedModel } from '@notetaker/model-manager';
 import {
   AutomaticSpeechRecognitionPipeline,
+  AutoModelForCTC,
   AutoModelForAudioFrameClassification,
   AutoProcessor,
+  AutoTokenizer,
   WhisperTextStreamer,
   read_audio,
 } from '@huggingface/transformers';
+import type { TimestampedText } from './models/timestamped-text';
 
-type TimestampedText = { timestampInMs: number; text: string };
 type TimestampedWord = { word: string; timestampInMs: number };
 type AudioInput = string | URL | Float32Array | Float64Array;
 type CallablePipeline = (input: unknown, options?: unknown) => Promise<unknown>;
+
+type CtcWord = { text: string; startSeconds: number };
+
+type CtcTokenizer = {
+  all_special_ids?: number[];
+  pad_token_id?: number;
+  word_delimiter_token?: string;
+  get_vocab(): Map<string, number>;
+};
+
+type TensorLike = {
+  data: ArrayLike<number>;
+  dims: number[];
+};
+
+const DIARIZATION_CHUNK_SECONDS = 2;
+const DIARIZATION_MIN_CHUNK_SECONDS = 0.25;
+const DIARIZATION_OVERLAP_SECONDS = 0.2;
+const ALIGNMENT_CHUNK_SECONDS = 10;
+const SPEAKER_NAMING_SEGMENT_CHUNK_SIZE = 50;
+const SPEAKER_NAMING_SEGMENT_CHUNK_OVERLAP = 3;
+
+type DiarizationOptions = {
+  speakerCountHint?: number | null;
+  debug?: (line: string) => void;
+};
 
 type TranscriptionChunk = {
   text?: string;
@@ -59,16 +87,21 @@ export class Engine {
           timestampedFragments.length,
           ...fragments,
         );
+        options.onPartialTranscript?.(timestampedFragments);
       },
       debug,
     );
     emit?.({ stage: 'transcription', status: 'completed' });
 
     emit?.({ stage: 'diarization', status: 'started' });
-    const speakerTurns = await this.diarizeAudio(meeting.audio);
+    const speakerTurns = await this.diarizeAudio(meeting.audio, {
+      speakerCountHint: options.speakerCountHint,
+      debug,
+    });
     const alignedWords = await this.alignTranscriptToAudio(
       transcriptText,
       meeting.audio,
+      debug,
     );
     emit?.({ stage: 'diarization', status: 'completed' });
 
@@ -80,11 +113,7 @@ export class Engine {
     );
 
     emit?.({ stage: 'speaker-naming', status: 'started' });
-    const speakerNames = await this.#nameSpeakers(
-      meeting,
-      transcriptText,
-      segments,
-    );
+    const speakerNames = new Map<string, string>//await this.#nameSpeakers(meeting, segments);
     emit?.({ stage: 'speaker-naming', status: 'completed' });
 
     return {
@@ -107,15 +136,17 @@ export class Engine {
     fragmentCallback: (fragments: TimestampedText[]) => void,
     debug?: (line: string) => void,
   ): Promise<string> {
-    debug?.(`[transcription] input ${this.#describeMeetingAudio(meetingAudio)}`);
+    debug?.(
+      `[transcription] input ${this.#describeMeetingAudio(meetingAudio)}`,
+    );
     debug?.('[transcription] loading Whisper pipeline...');
-    const pipeline = await this.#getPipelineForActiveModel('whisper', {
-      chunk_length_s: 30,
-      stride_length_s: 5,
-      return_timestamps: true,
-    }) as AutomaticSpeechRecognitionPipeline;
+    const pipeline = (await this.#getPipelineForActiveModel(
+      'whisper',
+    )) as AutomaticSpeechRecognitionPipeline;
     debug?.('[transcription] Whisper pipeline ready.');
+    let emittedLiveTranscript = false;
     const streamedFragments: TimestampedText[] = [];
+    let pendingStreamedText = '';
     let currentChunkStartSeconds = 0;
     const tokenizer = (pipeline as { tokenizer?: unknown }).tokenizer;
 
@@ -134,13 +165,25 @@ export class Engine {
           return;
         }
 
-        const fragment = {
-          timestampInMs: Math.round(currentChunkStartSeconds * 1000),
-          text: fragmentText,
-        };
+        pendingStreamedText = [pendingStreamedText, fragmentText]
+          .filter(Boolean)
+          .join(' ');
 
-        streamedFragments.push(fragment);
-        fragmentCallback([fragment]);
+        const sentences = this.#extractCompletedSentences(pendingStreamedText);
+        pendingStreamedText = sentences.remainingText;
+
+        if (sentences.completedSentences.length === 0) {
+          return;
+        }
+
+        streamedFragments.push(
+          ...sentences.completedSentences.map((sentence) => ({
+            timestampInMs: Math.round(currentChunkStartSeconds * 1000),
+            text: sentence,
+          })),
+        );
+        emittedLiveTranscript = true;
+        fragmentCallback(streamedFragments);
       },
       on_chunk_start: (time) => {
         currentChunkStartSeconds = time;
@@ -150,6 +193,18 @@ export class Engine {
         debug?.(`[transcription] streamer chunk end ${time.toFixed(2)}s.`);
       },
       on_finalize: () => {
+        const finalText = pendingStreamedText.trim();
+
+        if (finalText.length > 0) {
+          streamedFragments.push({
+            timestampInMs: Math.round(currentChunkStartSeconds * 1000),
+            text: finalText,
+          });
+          emittedLiveTranscript = true;
+          fragmentCallback(streamedFragments);
+          pendingStreamedText = '';
+        }
+
         debug?.('[transcription] streamer finalized.');
       },
     });
@@ -161,18 +216,23 @@ export class Engine {
         );
 
         return pipeline(audioInput, {
+          chunk_length_s: 30,
+          stride_length_s: 5,
+          return_timestamps: true,
           streamer,
         });
       },
       debug,
     )) as TranscriptionResult;
     debug?.(
-      `[transcription] pipeline resolved with ${this.#describeTranscriptionResult(result)}; streamedFragments=${streamedFragments.length}.`,
+      `[transcription] pipeline resolved with ${this.#describeTranscriptionResult(result)}; emittedLiveTranscript=${emittedLiveTranscript}.`,
     );
 
     if (typeof result === 'string') {
-      if (streamedFragments.length === 0) {
-        debug?.('[transcription] no streamed fragments; emitting string result fallback.');
+      if (!emittedLiveTranscript) {
+        debug?.(
+          '[transcription] no streamed fragments; emitting string result fallback.',
+        );
         fragmentCallback([{ timestampInMs: 0, text: result }]);
       }
 
@@ -180,16 +240,14 @@ export class Engine {
     }
 
     const text = result.text ?? '';
-    if (streamedFragments.length === 0) {
-      const fragments = this.#extractTranscriptFragments(result);
-      debug?.(
-        `[transcription] no streamed fragments; emitting ${fragments.length} result chunk fallback(s).`,
-      );
+    const fragments = this.#extractTranscriptFragments(result);
+    debug?.(
+      `[transcription] emitting ${fragments.length} timestamped result chunk(s).`,
+    );
 
-      fragmentCallback(
-        fragments.length > 0 ? fragments : [{ timestampInMs: 0, text }],
-      );
-    }
+    fragmentCallback(
+      fragments.length > 0 ? fragments : [{ timestampInMs: 0, text }],
+    );
 
     return text;
   }
@@ -197,44 +255,356 @@ export class Engine {
   /**
    * Outputs an array with speaker turns for a given audio file.
    */
-  async diarizeAudio(meetingAudio: MeetingAudio): Promise<SpeakerTurn[]> {
+  async diarizeAudio(
+    meetingAudio: MeetingAudio,
+    options: DiarizationOptions = {},
+  ): Promise<SpeakerTurn[]> {
+    const speakerCountHint = this.#normalizeSpeakerCountHint(
+      options.speakerCountHint,
+    );
+
+    if (speakerCountHint !== null) {
+      options.debug?.(
+        `[diarization] constraining output to ${speakerCountHint} speaker(s).`,
+      );
+    }
+
     const activeModel = await this.#requireActiveModel('pyannote');
-    const modelId = activeModel.manifest.modelName;
+    const modelId = `${activeModel.manifest.model}/${activeModel.manifest.version}`;
     const processor = (await AutoProcessor.from_pretrained(modelId)) as any;
     const model = (await AutoModelForAudioFrameClassification.from_pretrained(
       modelId,
       {
-        device: typeof (globalThis as { navigator?: { gpu?: unknown } }).navigator?.gpu !== 'undefined'
-          ? 'webgpu'
-          : 'wasm',
-        dtype: 'fp32',
+        device:
+          typeof (globalThis as { navigator?: { gpu?: unknown } }).navigator
+            ?.gpu !== 'undefined'
+            ? 'webgpu'
+            : 'wasm',
+        dtype: activeModel.manifest.quantization as any,
       },
     )) as any;
-    const sampleRate = processor.feature_extractor?.config.sampling_rate ?? 16_000;
+    const sampleRate =
+      processor.feature_extractor?.config.sampling_rate ?? 16_000;
     const readAudio = read_audio as unknown as (
       input: unknown,
       sampleRate: number,
     ) => Promise<Float32Array>;
-    const audio = await this.#withAudioInput(meetingAudio, (audioInput) =>
+    const rawAudio = await this.#withAudioInput(meetingAudio, (audioInput) =>
       audioInput instanceof Float32Array
         ? Promise.resolve(audioInput)
         : readAudio(audioInput, sampleRate),
     );
+    const audio = this.#sanitizeAudioSamples(rawAudio);
 
     if (audio.length === 0) {
       return [];
     }
 
-    const inputs = await processor(audio);
-    const { logits } = await model(inputs);
-    const result = processor.post_process_speaker_diarization(logits, audio.length) as any[];
+    const chunkSize = Math.max(
+      1,
+      Math.floor(DIARIZATION_CHUNK_SECONDS * sampleRate),
+    );
+    const overlapSize = Math.min(
+      chunkSize - 1,
+      Math.floor(DIARIZATION_OVERLAP_SECONDS * sampleRate),
+    );
+    const stepSize = chunkSize - overlapSize;
+    const turns: SpeakerTurn[] = [];
 
-    return (result[0] ?? []).map((segment: { id: string | number; start: number; end: number }) => ({
-      speaker: `SPEAKER_${String(segment.id).padStart(2, '0')}`,
-      startSeconds: segment.start,
-      endSeconds: segment.end,
-      text: '',
-    }));
+    options.debug?.(
+      `[diarization] processing ${(audio.length / sampleRate).toFixed(2)}s audio in ${DIARIZATION_CHUNK_SECONDS}s chunk(s).`,
+    );
+
+    for (
+      let startSample = 0;
+      startSample < audio.length;
+      startSample += stepSize
+    ) {
+      const endSample = Math.min(audio.length, startSample + chunkSize);
+      const chunkTurns = await this.#diarizeAudioChunkSafely(
+        audio,
+        startSample,
+        endSample,
+        audio.length,
+        sampleRate,
+        processor,
+        model,
+        speakerCountHint,
+        options.debug,
+      );
+
+      turns.push(...chunkTurns);
+
+      if (endSample === audio.length) {
+        break;
+      }
+    }
+
+    return this.#mergeSpeakerTurns(turns);
+  }
+
+  async #diarizeAudioChunkSafely(
+    audio: Float32Array,
+    startSample: number,
+    endSample: number,
+    totalSamples: number,
+    sampleRate: number,
+    processor: any,
+    model: any,
+    speakerCountHint: number | null,
+    debug?: (line: string) => void,
+  ): Promise<SpeakerTurn[]> {
+    try {
+      return await this.#diarizeAudioChunk(
+        audio.subarray(startSample, endSample),
+        startSample,
+        totalSamples,
+        sampleRate,
+        processor,
+        model,
+        speakerCountHint,
+      );
+    } catch (error) {
+      const chunkSamples = endSample - startSample;
+      const minChunkSamples = Math.max(
+        1,
+        Math.floor(DIARIZATION_MIN_CHUNK_SECONDS * sampleRate),
+      );
+      const message = this.#getErrorMessage(error);
+
+      if (chunkSamples <= minChunkSamples) {
+        debug?.(
+          `[diarization] skipping ${(chunkSamples / sampleRate).toFixed(2)}s chunk after ONNX Runtime failure: ${message}`,
+        );
+        return [];
+      }
+
+      const midpoint = startSample + Math.floor(chunkSamples / 2);
+      debug?.(
+        `[diarization] splitting ${(chunkSamples / sampleRate).toFixed(2)}s chunk after ONNX Runtime failure: ${message}`,
+      );
+
+      const firstHalf = await this.#diarizeAudioChunkSafely(
+        audio,
+        startSample,
+        midpoint,
+        totalSamples,
+        sampleRate,
+        processor,
+        model,
+        speakerCountHint,
+        debug,
+      );
+      const secondHalf = await this.#diarizeAudioChunkSafely(
+        audio,
+        midpoint,
+        endSample,
+        totalSamples,
+        sampleRate,
+        processor,
+        model,
+        speakerCountHint,
+        debug,
+      );
+
+      return [...firstHalf, ...secondHalf];
+    }
+  }
+
+  async #diarizeAudioChunk(
+    chunk: Float32Array,
+    chunkStartSample: number,
+    totalSamples: number,
+    sampleRate: number,
+    processor: any,
+    model: any,
+    speakerCountHint: number | null,
+  ): Promise<SpeakerTurn[]> {
+    const inputs = await processor(chunk);
+    const { logits } = await model(inputs);
+    const result =
+      speakerCountHint === null
+        ? (processor.post_process_speaker_diarization(
+            logits,
+            chunk.length,
+          ) as any[])
+        : this.#postProcessSpeakerDiarizationWithSpeakerCount(
+            logits,
+            chunk.length,
+            processor,
+            speakerCountHint,
+          );
+    const chunkStartSeconds = chunkStartSample / sampleRate;
+    const chunkEndSeconds = (chunkStartSample + chunk.length) / sampleRate;
+    const trimStartSeconds =
+      chunkStartSample === 0
+        ? chunkStartSeconds
+        : chunkStartSeconds + DIARIZATION_OVERLAP_SECONDS / 2;
+    const trimEndSeconds =
+      chunkStartSample + chunk.length >= totalSamples
+        ? chunkEndSeconds
+        : chunkEndSeconds - DIARIZATION_OVERLAP_SECONDS / 2;
+
+    const segments = (result[0] ?? []) as Array<{
+      id: string | number;
+      start: number;
+      end: number;
+    }>;
+
+    return segments
+      .map((segment): SpeakerTurn | null => {
+        const startSeconds = Math.max(
+          trimStartSeconds,
+          chunkStartSeconds + segment.start,
+        );
+        const endSeconds = Math.min(
+          trimEndSeconds,
+          chunkStartSeconds + segment.end,
+        );
+
+        if (endSeconds <= startSeconds) {
+          return null;
+        }
+
+        return {
+          speaker: `SPEAKER_${String(segment.id).padStart(2, '0')}`,
+          startSeconds,
+          endSeconds,
+          text: '',
+        };
+      })
+      .filter((turn): turn is SpeakerTurn => turn !== null);
+  }
+
+  #mergeSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
+    const sortedTurns = [...turns].sort(
+      (first, second) => first.startSeconds - second.startSeconds,
+    );
+    const mergedTurns: SpeakerTurn[] = [];
+
+    for (const turn of sortedTurns) {
+      const previousTurn = mergedTurns.at(-1);
+
+      if (
+        previousTurn !== undefined &&
+        previousTurn.speaker === turn.speaker &&
+        turn.startSeconds - previousTurn.endSeconds <=
+          DIARIZATION_OVERLAP_SECONDS
+      ) {
+        previousTurn.endSeconds = Math.max(
+          previousTurn.endSeconds,
+          turn.endSeconds,
+        );
+        continue;
+      }
+
+      mergedTurns.push({ ...turn });
+    }
+
+    return mergedTurns;
+  }
+
+  #sanitizeAudioSamples(audio: Float32Array): Float32Array {
+    let needsCopy = false;
+
+    for (let index = 0; index < audio.length; index += 1) {
+      const sample = audio[index];
+
+      if (!Number.isFinite(sample) || sample < -1 || sample > 1) {
+        needsCopy = true;
+        break;
+      }
+    }
+
+    if (!needsCopy) {
+      return audio;
+    }
+
+    const sanitized = new Float32Array(audio.length);
+
+    for (let index = 0; index < audio.length; index += 1) {
+      const sample = audio[index];
+
+      sanitized[index] = Number.isFinite(sample)
+        ? Math.max(-1, Math.min(1, sample))
+        : 0;
+    }
+
+    return sanitized;
+  }
+
+  #normalizeSpeakerCountHint(value: number | null | undefined): number | null {
+    if (value === null || value === undefined || !Number.isFinite(value)) {
+      return null;
+    }
+
+    return Math.max(1, Math.floor(value));
+  }
+
+  #postProcessSpeakerDiarizationWithSpeakerCount(
+    logits: { tolist(): number[][][] },
+    numSamples: number,
+    processor: any,
+    speakerCount: number,
+  ): any[] {
+    const featureExtractor = processor.feature_extractor ?? processor;
+    const config = featureExtractor.config ?? {};
+    const samplingRate = config.sampling_rate ?? 16_000;
+    const frameCount =
+      typeof featureExtractor.samples_to_frames === 'function'
+        ? featureExtractor.samples_to_frames(numSamples)
+        : numSamples;
+    const ratio = numSamples / frameCount / samplingRate;
+
+    return logits.tolist().map((scores) => {
+      const segments: Array<{
+        id: number;
+        start: number;
+        end: number;
+        score: number;
+      }> = [];
+      let currentSpeaker = -1;
+
+      for (let index = 0; index < scores.length; index += 1) {
+        const frameScores = scores[index];
+        const limitedCount = Math.min(speakerCount, frameScores.length);
+        let id = 0;
+        let score = frameScores[0] ?? 0;
+
+        for (
+          let speakerIndex = 1;
+          speakerIndex < limitedCount;
+          speakerIndex += 1
+        ) {
+          const speakerScore =
+            frameScores[speakerIndex] ?? Number.NEGATIVE_INFINITY;
+
+          if (speakerScore > score) {
+            id = speakerIndex;
+            score = speakerScore;
+          }
+        }
+
+        if (id !== currentSpeaker) {
+          currentSpeaker = id;
+          segments.push({ id, start: index, end: index + 1, score });
+        } else {
+          const segment = segments.at(-1);
+
+          if (segment !== undefined) {
+            segment.end = index + 1;
+            segment.score += score;
+          }
+        }
+      }
+
+      return segments.map(({ id, start, end, score }) => ({
+        id,
+        start: start * ratio,
+        end: end * ratio,
+        confidence: score / (end - start),
+      }));
+    });
   }
 
   /**
@@ -244,39 +614,110 @@ export class Engine {
   async alignTranscriptToAudio(
     transcript: string,
     meetingAudio: MeetingAudio,
+    debug?: (line: string) => void,
   ): Promise<TimestampedWord[]> {
     const activeModel = await this.#requireActiveModel('wav2vec2');
+    const transcriptWords = transcript.match(/\S+/g) ?? [];
 
-    try {
-      const pipeline = (await this.pipelineFactory.getPipeline(
-        activeModel.manifest,
-      )) as CallablePipeline;
-      const result = (await this.#withAudioInput(meetingAudio, (audioInput) =>
-        pipeline(audioInput, { transcript }),
-      )) as unknown;
-
-      if (Array.isArray(result)) {
-        return result
-          .map((item) => this.#toTimestampedWord(item))
-          .filter((item): item is TimestampedWord => item !== null);
-      }
-
+    if (transcriptWords.length === 0) {
       return [];
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === 'Not supported in pipelines'
-      ) {
-        return [];
-      }
-
-      throw error;
     }
+
+    const modelId = `${activeModel.manifest.model}/${activeModel.manifest.version}`;
+    const loadOptions = {
+      local_files_only: true,
+    };
+    const processor = (await AutoProcessor.from_pretrained(
+      modelId,
+      loadOptions,
+    )) as any;
+    const tokenizer = (processor.tokenizer ??
+      (await AutoTokenizer.from_pretrained(
+        modelId,
+        loadOptions,
+      ))) as CtcTokenizer;
+    const model = (await AutoModelForCTC.from_pretrained(modelId, {
+      ...loadOptions,
+      device:
+        typeof (globalThis as { navigator?: { gpu?: unknown } }).navigator
+          ?.gpu !== 'undefined'
+          ? 'webgpu'
+          : 'wasm',
+      dtype: activeModel.manifest.quantization as any,
+    })) as any;
+    const sampleRate =
+      processor.feature_extractor?.config.sampling_rate ?? 16_000;
+    const readAudio = read_audio as unknown as (
+      input: unknown,
+      sampleRate: number,
+    ) => Promise<Float32Array>;
+    const rawAudio = await this.#withAudioInput(meetingAudio, (audioInput) =>
+      audioInput instanceof Float32Array
+        ? Promise.resolve(audioInput)
+        : readAudio(audioInput, sampleRate),
+    );
+    const audio = this.#sanitizeAudioSamples(rawAudio);
+
+    if (audio.length === 0) {
+      return [];
+    }
+
+    const chunkSize = Math.max(
+      1,
+      Math.floor(ALIGNMENT_CHUNK_SECONDS * sampleRate),
+    );
+    const ctcWords: CtcWord[] = [];
+
+    debug?.(
+      `[alignment] processing ${(audio.length / sampleRate).toFixed(2)}s audio in ${ALIGNMENT_CHUNK_SECONDS}s chunk(s).`,
+    );
+
+    for (
+      let startSample = 0;
+      startSample < audio.length;
+      startSample += chunkSize
+    ) {
+      const endSample = Math.min(audio.length, startSample + chunkSize);
+      const chunk = audio.subarray(startSample, endSample);
+
+      try {
+        const inputs = await processor(chunk);
+        const output = await model(inputs);
+        const logits = output.logits as TensorLike | undefined;
+
+        if (logits === undefined || logits.dims.length < 3) {
+          continue;
+        }
+
+        const chunkOffsetSeconds = startSample / sampleRate;
+        const chunkWords = this.#extractCtcWords(
+          logits,
+          tokenizer,
+          chunk.length / sampleRate,
+        );
+
+        ctcWords.push(
+          ...chunkWords.map((word) => ({
+            ...word,
+            startSeconds: word.startSeconds + chunkOffsetSeconds,
+          })),
+        );
+      } catch (error) {
+        debug?.(
+          `[alignment] skipping ${(chunk.length / sampleRate).toFixed(2)}s chunk at ${(startSample / sampleRate).toFixed(2)}s after ONNX Runtime failure: ${this.#getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    return this.#mapTranscriptWordsToCtcWords(transcriptWords, ctcWords);
   }
 
   async #getPipelineForActiveModel(
     model: ManagedModel,
-    additionalOptions?: Omit<Parameters<typeof this.pipelineFactory.getPipeline>[1], never>,
+    additionalOptions?: Omit<
+      Parameters<typeof this.pipelineFactory.getPipeline>[1],
+      never
+    >,
   ): Promise<CallablePipeline> {
     const activeModel = await this.#requireActiveModel(model);
 
@@ -370,7 +811,9 @@ export class Engine {
       return `URL(${audioInput.href})`;
     }
 
-    return audioInput.startsWith('blob:') ? 'blob URL' : `string(${audioInput})`;
+    return audioInput.startsWith('blob:')
+      ? 'blob URL'
+      : `string(${audioInput})`;
   }
 
   #describeTranscriptionResult(result: TranscriptionResult): string {
@@ -379,6 +822,32 @@ export class Engine {
     }
 
     return `object(textLength=${result.text?.length ?? 0}, chunks=${result.chunks?.length ?? 0})`;
+  }
+
+  #extractCompletedSentences(text: string): {
+    completedSentences: string[];
+    remainingText: string;
+  } {
+    const completedSentences: string[] = [];
+    const sentencePattern = /[^.!?]+[.!?]+(?:["')\]]+)?/g;
+    let match: RegExpExecArray | null;
+    let consumedLength = 0;
+
+    while ((match = sentencePattern.exec(text)) !== null) {
+      const sentence = match[0].trim();
+
+      if (sentence.length === 0) {
+        continue;
+      }
+
+      completedSentences.push(sentence);
+      consumedLength = sentencePattern.lastIndex;
+    }
+
+    return {
+      completedSentences,
+      remainingText: text.slice(consumedLength).trim(),
+    };
   }
 
   #buildSegments(
@@ -504,7 +973,6 @@ export class Engine {
 
   async #nameSpeakers(
     meeting: Meeting,
-    transcript: string,
     segments: Omit<TranscriptSegment, 'speakerName'>[],
   ): Promise<Map<string, string>> {
     const speakers = [...new Set(segments.map((segment) => segment.speaker))];
@@ -519,20 +987,53 @@ export class Engine {
       const pipeline = (await this.pipelineFactory.getPipeline(
         activeModel.manifest,
       )) as CallablePipeline;
-      const result = (await pipeline(
-        this.#createSpeakerNamingPrompt(
-          meeting,
-          transcript,
-          segments,
-          speakers,
-        ),
-        {
-          max_new_tokens: 256,
-          return_full_text: false,
-        },
-      )) as TextGenerationResult;
-      const text = this.#getGeneratedText(result);
-      const parsed = this.#parseSpeakerNames(text);
+      const parsed = new Map<string, string>();
+      const chunkStep =
+        SPEAKER_NAMING_SEGMENT_CHUNK_SIZE -
+        SPEAKER_NAMING_SEGMENT_CHUNK_OVERLAP;
+
+      for (
+        let startIndex = 0;
+        startIndex < segments.length;
+        startIndex += chunkStep
+      ) {
+        const remainingSpeakers = speakers.filter(
+          (speaker) => !parsed.has(speaker),
+        );
+
+        if (remainingSpeakers.length === 0) {
+          break;
+        }
+
+        const chunk = segments.slice(
+          startIndex,
+          startIndex + SPEAKER_NAMING_SEGMENT_CHUNK_SIZE,
+        );
+        const chunkSpeakers = remainingSpeakers.filter((speaker) =>
+          chunk.some((segment) => segment.speaker === speaker),
+        );
+
+        if (chunkSpeakers.length === 0) {
+          continue;
+        }
+
+        const result = (await pipeline(
+          this.#createSpeakerNamingPrompt(meeting, chunk, chunkSpeakers, parsed),
+          {
+            max_new_tokens: 256,
+            return_full_text: false,
+          },
+        )) as TextGenerationResult;
+        const text = this.#getGeneratedText(result);
+        const chunkParsed = this.#parseSpeakerNames(text);
+
+        console.log("names", chunkParsed)
+        for (const [speaker, name] of chunkParsed) {
+          if (!parsed.has(speaker)) {
+            parsed.set(speaker, name);
+          }
+        }
+      }
 
       return new Map(
         speakers.map((speaker) => [speaker, parsed.get(speaker) ?? speaker]),
@@ -540,7 +1041,8 @@ export class Engine {
     } catch (error) {
       if (
         error instanceof Error &&
-        error.message === 'Not supported in pipelines'
+        (error.message === 'Not supported in pipelines' ||
+          this.#isModelSessionError(error))
       ) {
         return new Map(speakers.map((speaker) => [speaker, speaker]));
       }
@@ -549,21 +1051,49 @@ export class Engine {
     }
   }
 
+  #isModelSessionError(error: unknown): boolean {
+    const message = this.#getErrorMessage(error);
+
+    return (
+      message.includes("Can't create a session") ||
+      message.includes('Failed to load external data file') ||
+      message.includes('Deserialize tensor')
+    );
+  }
+
+  #getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
   #createSpeakerNamingPrompt(
     meeting: Meeting,
-    transcript: string,
     segments: Omit<TranscriptSegment, 'speakerName'>[],
     speakers: string[],
+    knownSpeakerNames: Map<string, string>,
   ): string {
     return [
       'Infer human names for transcript speaker labels when the name is explicit.',
       'Return only JSON in this shape: [{"speaker":"SPEAKER_0","name":"Alice"}].',
+      'If a name is not available, leave it out of the response',
       `Meeting title: ${meeting.title ?? 'Untitled meeting'}`,
       `Speakers: ${speakers.join(', ')}`,
       'Segments:',
-      ...segments.map((segment) => `${segment.speaker}: ${segment.text}`),
-      'Transcript:',
-      transcript,
+      ...segments.map(
+        (segment) =>
+          `${knownSpeakerNames.get(segment.speaker) ?? segment.speaker}: ${segment.text}`,
+      ),
     ].join('\n');
   }
 
@@ -663,6 +1193,220 @@ export class Engine {
     }
   }
 
+  #extractCtcWords(
+    logits: TensorLike,
+    tokenizer: CtcTokenizer,
+    durationSeconds: number,
+  ): CtcWord[] {
+    const [, frameCount = 0, vocabularySize = 0] = logits.dims;
+
+    if (frameCount === 0 || vocabularySize === 0) {
+      return [];
+    }
+
+    const vocabulary = tokenizer.get_vocab();
+    const tokensById = new Map<number, string>(
+      [...vocabulary.entries()].map(([token, id]) => [id, token]),
+    );
+    const blankId = tokenizer.pad_token_id ?? vocabulary.get('<pad>') ?? 0;
+    const specialIds = new Set(tokenizer.all_special_ids ?? [blankId]);
+    const wordDelimiterToken = tokenizer.word_delimiter_token ?? '|';
+    const frameDurationSeconds = durationSeconds / frameCount;
+    const words: CtcWord[] = [];
+    let currentWord = '';
+    let currentWordStartSeconds = 0;
+    let previousTokenId = -1;
+
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      const tokenId = this.#argmax(
+        logits.data,
+        frameIndex * vocabularySize,
+        vocabularySize,
+      );
+
+      if (tokenId === previousTokenId) {
+        continue;
+      }
+
+      previousTokenId = tokenId;
+
+      if (tokenId === blankId || specialIds.has(tokenId)) {
+        continue;
+      }
+
+      const token = tokensById.get(tokenId);
+
+      if (token === undefined) {
+        continue;
+      }
+
+      if (token === wordDelimiterToken || token.trim().length === 0) {
+        if (currentWord.length > 0) {
+          words.push({
+            text: currentWord,
+            startSeconds: currentWordStartSeconds,
+          });
+          currentWord = '';
+        }
+
+        continue;
+      }
+
+      if (currentWord.length === 0) {
+        currentWordStartSeconds = frameIndex * frameDurationSeconds;
+      }
+
+      currentWord += this.#normalizeCtcToken(token);
+    }
+
+    if (currentWord.length > 0) {
+      words.push({ text: currentWord, startSeconds: currentWordStartSeconds });
+    }
+
+    return words;
+  }
+
+  #argmax(values: ArrayLike<number>, offset: number, length: number): number {
+    let bestIndex = 0;
+    let bestValue = values[offset] ?? Number.NEGATIVE_INFINITY;
+
+    for (let index = 1; index < length; index += 1) {
+      const value = values[offset + index] ?? Number.NEGATIVE_INFINITY;
+
+      if (value > bestValue) {
+        bestValue = value;
+        bestIndex = index;
+      }
+    }
+
+    return bestIndex;
+  }
+
+  #normalizeCtcToken(token: string): string {
+    return token.replace(/^##/, '').replace(/^▁/, '');
+  }
+
+  #mapTranscriptWordsToCtcWords(
+    transcriptWords: string[],
+    ctcWords: CtcWord[],
+  ): TimestampedWord[] {
+    if (ctcWords.length === 0) {
+      return [];
+    }
+
+    const normalizedCtcWords = ctcWords.map((word) =>
+      this.#normalizeAlignmentWord(word.text),
+    );
+    let ctcIndex = 0;
+
+    return transcriptWords.map((word, wordIndex) => {
+      const normalizedWord = this.#normalizeAlignmentWord(word);
+      const matchedIndex = this.#findAlignedCtcWordIndex(
+        normalizedWord,
+        normalizedCtcWords,
+        ctcIndex,
+      );
+
+      if (matchedIndex !== -1) {
+        ctcIndex = matchedIndex + 1;
+
+        return {
+          word,
+          timestampInMs: Math.round(ctcWords[matchedIndex].startSeconds * 1000),
+        };
+      }
+
+      const fallbackIndex = Math.min(ctcIndex, ctcWords.length - 1);
+      const fallbackTimestamp = ctcWords[fallbackIndex].startSeconds * 1000;
+      ctcIndex = Math.min(ctcIndex + 1, ctcWords.length);
+
+      return {
+        word,
+        timestampInMs: Math.round(
+          fallbackTimestamp + Math.max(0, wordIndex - fallbackIndex) * 450,
+        ),
+      };
+    });
+  }
+
+  #findAlignedCtcWordIndex(
+    word: string,
+    ctcWords: string[],
+    startIndex: number,
+  ): number {
+    if (word.length === 0) {
+      return startIndex < ctcWords.length ? startIndex : -1;
+    }
+
+    const searchEnd = Math.min(ctcWords.length, startIndex + 12);
+
+    for (let index = startIndex; index < searchEnd; index += 1) {
+      if (ctcWords[index] === word) {
+        return index;
+      }
+    }
+
+    for (let index = startIndex; index < searchEnd; index += 1) {
+      if (this.#areSimilarAlignmentWords(word, ctcWords[index])) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  #normalizeAlignmentWord(word: string): string {
+    return word
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{Letter}\p{Number}]+/gu, '')
+      .toLowerCase();
+  }
+
+  #areSimilarAlignmentWords(first: string, second: string): boolean {
+    if (first.length === 0 || second.length === 0) {
+      return false;
+    }
+
+    if (first.startsWith(second) || second.startsWith(first)) {
+      return Math.min(first.length, second.length) >= 3;
+    }
+
+    return (
+      this.#levenshteinDistance(first, second) <=
+      Math.max(1, Math.floor(Math.max(first.length, second.length) * 0.25))
+    );
+  }
+
+  #levenshteinDistance(first: string, second: string): number {
+    const previous = new Array(second.length + 1)
+      .fill(0)
+      .map((_, index) => index);
+    const current = new Array(second.length + 1).fill(0);
+
+    for (let firstIndex = 1; firstIndex <= first.length; firstIndex += 1) {
+      current[0] = firstIndex;
+
+      for (
+        let secondIndex = 1;
+        secondIndex <= second.length;
+        secondIndex += 1
+      ) {
+        const substitutionCost =
+          first[firstIndex - 1] === second[secondIndex - 1] ? 0 : 1;
+        current[secondIndex] = Math.min(
+          previous[secondIndex] + 1,
+          current[secondIndex - 1] + 1,
+          previous[secondIndex - 1] + substitutionCost,
+        );
+      }
+
+      previous.splice(0, previous.length, ...current);
+    }
+
+    return previous[second.length];
+  }
+
   #isSpeakerNameGuess(
     value: unknown,
   ): value is { speaker: string; name?: string | null } {
@@ -676,30 +1420,4 @@ export class Engine {
         typeof value.name === 'string')
     );
   }
-
-  #toTimestampedWord(value: unknown): TimestampedWord | null {
-    if (typeof value !== 'object' || value === null) {
-      return null;
-    }
-
-    const record = value as Record<string, unknown>;
-    const word = record.word;
-    const timestampInMs = record.timestampInMs;
-    const start = record.start;
-
-    if (typeof word !== 'string') {
-      return null;
-    }
-
-    if (typeof timestampInMs === 'number') {
-      return { word, timestampInMs };
-    }
-
-    if (typeof start === 'number') {
-      return { word, timestampInMs: Math.round(start * 1000) };
-    }
-
-    return null;
-  }
-
 }

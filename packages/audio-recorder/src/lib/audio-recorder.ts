@@ -79,17 +79,22 @@ export class AudioRecorder {
     }
   }
 
-  async stop(options: AudioRecorderOptions = {}): Promise<AudioRecordingResult> {
+  async stop(
+    options: AudioRecorderOptions = {},
+  ): Promise<AudioRecordingResult> {
     const mediaRecorder = this.#mediaRecorder;
     if (mediaRecorder === null || this.#state !== 'recording') {
       throw new Error('Audio recorder is not recording.');
     }
 
-    const mimeType = mediaRecorder.mimeType || this.#resolveMimeType(options.mimeType);
+    const mimeType =
+      mediaRecorder.mimeType || this.#resolveMimeType(options.mimeType);
     const fileName = this.#resolveFileName(mimeType, options.fileName);
     const stopped = new Promise<void>((resolve, reject) => {
       mediaRecorder.addEventListener('stop', () => resolve(), { once: true });
-      mediaRecorder.addEventListener('error', (event) => reject(event.error), { once: true });
+      mediaRecorder.addEventListener('error', (event) => reject(event.error), {
+        once: true,
+      });
     });
 
     mediaRecorder.stop();
@@ -98,7 +103,9 @@ export class AudioRecorder {
     const blob = new Blob(this.#chunks, { type: mimeType });
     this.#chunks = [];
 
-    const fileHandle = await this.directoryHandle.getFileHandle(fileName, { create: true });
+    const fileHandle = await this.directoryHandle.getFileHandle(fileName, {
+      create: true,
+    });
     const writable = await fileHandle.createWritable();
 
     try {
@@ -132,8 +139,13 @@ export class AudioRecorder {
   }
 
   #assertBrowserSupport(): void {
-    if (typeof navigator === 'undefined' || navigator.mediaDevices?.getUserMedia === undefined) {
-      throw new Error('Audio recording requires navigator.mediaDevices.getUserMedia().');
+    if (
+      typeof navigator === 'undefined' ||
+      navigator.mediaDevices?.getUserMedia === undefined
+    ) {
+      throw new Error(
+        'Audio recording requires navigator.mediaDevices.getUserMedia().',
+      );
     }
 
     if (typeof MediaRecorder === 'undefined') {
@@ -165,7 +177,7 @@ export class AudioRecorder {
     }
 
     const extension = this.#mimeTypeToExtension(mimeType);
-    const stamp = new Date().toISOString().replaceAll(':', '-');
+    const stamp = new Date().toISOString().replace(/:/g, '-');
     return `recording-${stamp}.${extension}`;
   }
 

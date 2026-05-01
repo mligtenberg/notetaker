@@ -21,6 +21,11 @@ import type {
   EngineWorkerRequest,
   EngineWorkerResponse,
 } from './engine.worker';
+import { DiarizationPage } from './components/diarization-page';
+import { EnginePage } from './components/engine-page';
+import { ModelsPage } from './components/models-page';
+import { RecordingsPage } from './components/recordings-page';
+import { TranscriptionPage } from './components/transcription-page';
 import styles from './app.module.css';
 
 interface StoredAudioFile {
@@ -392,12 +397,27 @@ const WHISPER_SAMPLE_RATE = 16_000;
 async function decodeAudioBlobToMonoFloat32(
   blob: Blob,
   targetSampleRate: number,
+  onDebug?: (line: string) => void,
 ): Promise<Float32Array> {
+  onDebug?.(
+    `[decode] source blob size=${formatBytes(blob.size)} type=${blob.type || 'unknown'}`,
+  );
+
+  if (blob.size === 0) {
+    throw new Error('Selected audio file is empty.');
+  }
+
   const arrayBuffer = await blob.arrayBuffer();
+  onDebug?.(
+    `[decode] loaded ${formatBytes(arrayBuffer.byteLength)} into memory.`,
+  );
   const decodeContext = new AudioContext();
 
   try {
     const decoded = await decodeContext.decodeAudioData(arrayBuffer.slice(0));
+    onDebug?.(
+      `[decode] decoded duration=${decoded.duration.toFixed(3)}s sampleRate=${decoded.sampleRate} channels=${decoded.numberOfChannels} frames=${decoded.length}`,
+    );
     const frameCount = Math.ceil(decoded.duration * targetSampleRate);
     if (!Number.isFinite(decoded.duration) || frameCount <= 0) {
       throw new Error(
@@ -416,9 +436,19 @@ async function decodeAudioBlobToMonoFloat32(
     source.start();
     const rendered = await offlineContext.startRendering();
     const samples = rendered.getChannelData(0).slice();
+    const renderedDuration = samples.length / targetSampleRate;
+    onDebug?.(
+      `[decode] resampled frames=${samples.length} duration=${renderedDuration.toFixed(3)}s targetSampleRate=${targetSampleRate}`,
+    );
     if (samples.length === 0) {
       throw new Error(
         `Resampled audio is empty (${decoded.duration.toFixed(3)}s decoded duration).`,
+      );
+    }
+
+    if (renderedDuration < 0.1) {
+      throw new Error(
+        `Decoded audio is unexpectedly short (${renderedDuration.toFixed(3)}s from ${formatBytes(blob.size)} source file).`,
       );
     }
 
@@ -644,7 +674,8 @@ function getWebGpuSupportLabel(support: WebGpuSupport): string {
 }
 
 function getWhisperRuntimeLabel(version: ModelVersionManifestEntry): string {
-  const quantization = version.quantization ?? version.metadata?.['quantization'];
+  const quantization =
+    version.quantization ?? version.metadata?.['quantization'];
 
   return typeof quantization === 'string' && quantization.length > 0
     ? `auto device with ${quantization} quantization from the active Whisper model`
@@ -961,6 +992,49 @@ export function App() {
     }
   }
 
+  async function handleDeleteRecording(file: StoredAudioFile) {
+    const directoryHandle = directoryHandleRef.current;
+
+    if (directoryHandle === null) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete ${file.name}?`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setStatus('saving');
+      setMessage(`Deleting ${file.name} from OPFS/audio-files...`);
+      await directoryHandle.removeEntry(file.name);
+
+      if (selectedAudioName === file.name) {
+        setSelectedAudioName('');
+        setMeetingNotes(null);
+        setTranscriptionResult(null);
+        setDiarizationResult(null);
+        setEngineMessage('Select a recording and run the engine.');
+      }
+
+      if (lastRecording?.fileName === file.name) {
+        setLastRecording(null);
+      }
+
+      await refreshFiles(directoryHandle);
+      setStatus('ready');
+      setMessage(`Deleted ${file.name} from OPFS/audio-files.`);
+    } catch (error) {
+      setStatus('error');
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : `Failed to delete ${file.name}.`,
+      );
+    }
+  }
+
   function handleCancelRecording() {
     recorderRef.current?.cancel();
     setStatus('ready');
@@ -1125,10 +1199,52 @@ export function App() {
 
   function getEngineWorker(): Worker {
     if (engineWorkerRef.current === null) {
-      engineWorkerRef.current = new EngineWorker();
+      const worker = new EngineWorker();
+
+      worker.addEventListener('error', (event) => {
+        appendEngineLog(
+          `[worker] error ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`,
+        );
+      });
+      worker.addEventListener('messageerror', () => {
+        appendEngineLog(
+          '[worker] messageerror while transferring request/response.',
+        );
+      });
+      engineWorkerRef.current = worker;
     }
 
     return engineWorkerRef.current;
+  }
+
+  function appendEngineLog(line: string): void {
+    setEngineLog((current) => [...current, line]);
+  }
+
+  function handleWorkerUpdate(msg: EngineWorkerResponse): boolean {
+    if (msg.type === 'progress') {
+      const { stage, status } = msg.event;
+      setEngineProgress((current) => ({ ...current, [stage]: status }));
+      appendEngineLog(`[${stage}] ${status}`);
+      return true;
+    }
+
+    if (msg.type === 'log') {
+      appendEngineLog(msg.line);
+      return true;
+    }
+
+    if (msg.type === 'bar') {
+      setEngineBarValue(msg.value);
+      return true;
+    }
+
+    if (msg.type === 'live-transcript') {
+      setLiveTranscriptSegments(msg.segments);
+      return true;
+    }
+
+    return false;
   }
 
   async function handleRunEngine() {
@@ -1178,14 +1294,21 @@ export function App() {
       setEngineLog((current) => [
         ...current,
         `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
         WHISPER_SAMPLE_RATE,
+        appendEngineLog,
       );
+      if (samples.length === 0) {
+        throw new Error('Decoded audio produced no samples.');
+      }
+      const sampleCount = samples.length;
+      const sampleDurationSeconds = sampleCount / WHISPER_SAMPLE_RATE;
       setEngineLog((current) => [
         ...current,
-        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Decoded ${sampleDurationSeconds.toFixed(3)}s of audio (${sampleCount} samples).`,
         `Runtime: ${getWhisperRuntimeLabel(activeWhisper)}`,
         `Using Whisper ${getModelVersionTitle(activeWhisper)}.`,
         `Using Pyannote ${getModelVersionTitle(activePyannote)}.`,
@@ -1203,25 +1326,11 @@ export function App() {
             return;
           }
 
-          if (msg.type === 'progress') {
-            const { stage, status } = msg.event;
-            setEngineProgress((current) => ({ ...current, [stage]: status }));
-            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
+          if (handleWorkerUpdate(msg)) {
             return;
           }
 
-          if (msg.type === 'log') {
-            setEngineLog((current) => [...current, msg.line]);
-            return;
-          }
-
-          if (msg.type === 'bar') {
-            setEngineBarValue(msg.value);
-            return;
-          }
-
-          if (msg.type === 'live-transcript') {
-            setLiveTranscriptSegments(msg.segments);
+          if (msg.type !== 'result') {
             return;
           }
 
@@ -1250,8 +1359,13 @@ export function App() {
           fileName: selectedFile.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
+          numSpeakers: numSpeakersHint,
         };
+        appendEngineLog(
+          `[worker] posting engine request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,
+        );
         worker.postMessage(request, [samples.buffer]);
+        appendEngineLog(`[worker] posted engine request ${requestId}.`);
       });
 
       setMeetingNotes(notes);
@@ -1267,7 +1381,6 @@ export function App() {
 
   async function handleRunTranscription() {
     const selectedFile = files.find((file) => file.name === selectedAudioName);
-
     if (selectedFile === undefined) {
       setEngineMessage('Select a stored recording first.');
       return;
@@ -1282,8 +1395,6 @@ export function App() {
 
     setEngineStatus('processing');
     setEngineMessage(`Transcribing ${selectedFile.name}...`);
-    setEngineDialogMode('transcription');
-    setEngineDialogOpen(true);
     setEngineLog([`Starting transcription-only run for ${selectedFile.name}.`]);
     setLiveTranscriptSegments([]);
     setEngineBarValue(null);
@@ -1300,14 +1411,21 @@ export function App() {
       setEngineLog((current) => [
         ...current,
         `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
         WHISPER_SAMPLE_RATE,
+        appendEngineLog,
       );
+      if (samples.length === 0) {
+        throw new Error('Decoded audio produced no samples.');
+      }
+      const sampleCount = samples.length;
+      const sampleDurationSeconds = sampleCount / WHISPER_SAMPLE_RATE;
       setEngineLog((current) => [
         ...current,
-        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Decoded ${sampleDurationSeconds.toFixed(3)}s of audio (${sampleCount} samples).`,
         `Runtime: ${getWhisperRuntimeLabel(activeWhisper)}`,
         `Using Whisper ${getModelVersionTitle(activeWhisper)}.`,
       ]);
@@ -1323,25 +1441,11 @@ export function App() {
             return;
           }
 
-          if (msg.type === 'progress') {
-            const { stage, status } = msg.event;
-            setEngineProgress((current) => ({ ...current, [stage]: status }));
-            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
+          if (handleWorkerUpdate(msg)) {
             return;
           }
 
-          if (msg.type === 'log') {
-            setEngineLog((current) => [...current, msg.line]);
-            return;
-          }
-
-          if (msg.type === 'bar') {
-            setEngineBarValue(msg.value);
-            return;
-          }
-
-          if (msg.type === 'live-transcript') {
-            setLiveTranscriptSegments(msg.segments);
+          if (msg.type !== 'result') {
             return;
           }
 
@@ -1368,7 +1472,11 @@ export function App() {
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
         };
+        appendEngineLog(
+          `[worker] posting transcription request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,
+        );
         worker.postMessage(request, [samples.buffer]);
+        appendEngineLog(`[worker] posted transcription request ${requestId}.`);
       });
 
       setTranscriptionResult(transcript);
@@ -1413,14 +1521,21 @@ export function App() {
       setEngineLog((current) => [
         ...current,
         `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
+        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
         WHISPER_SAMPLE_RATE,
+        appendEngineLog,
       );
+      if (samples.length === 0) {
+        throw new Error('Decoded audio produced no samples.');
+      }
+      const sampleCount = samples.length;
+      const sampleDurationSeconds = sampleCount / WHISPER_SAMPLE_RATE;
       setEngineLog((current) => [
         ...current,
-        `Decoded ${(samples.length / WHISPER_SAMPLE_RATE).toFixed(1)}s of audio.`,
+        `Decoded ${sampleDurationSeconds.toFixed(3)}s of audio (${sampleCount} samples).`,
         `Using Pyannote ${getModelVersionTitle(activePyannote)}.`,
       ]);
 
@@ -1435,24 +1550,15 @@ export function App() {
             return;
           }
 
-          if (msg.type === 'progress') {
-            const { stage, status } = msg.event;
-            setEngineProgress((current) => ({ ...current, [stage]: status }));
-            setEngineLog((current) => [...current, `[${stage}] ${status}`]);
-            return;
-          }
-
-          if (msg.type === 'log') {
-            setEngineLog((current) => [...current, msg.line]);
-            return;
-          }
-
-          if (msg.type === 'bar') {
-            setEngineBarValue(msg.value);
-            return;
-          }
-
           if (msg.type === 'live-transcript') {
+            return;
+          }
+
+          if (handleWorkerUpdate(msg)) {
+            return;
+          }
+
+          if (msg.type !== 'result') {
             return;
           }
 
@@ -1479,7 +1585,11 @@ export function App() {
           useWebGpu: webGpuSupport === 'supported',
           numSpeakers: numSpeakersHint,
         };
+        appendEngineLog(
+          `[worker] posting diarization request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,
+        );
         worker.postMessage(request, [samples.buffer]);
+        appendEngineLog(`[worker] posted diarization request ${requestId}.`);
       });
 
       setDiarizationResult(turns);
@@ -1514,697 +1624,6 @@ export function App() {
         ),
       )
     : null;
-
-  function ModelsPage() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.listHeader}>
-          <div>
-            <p className={styles.label}>OPFS/models</p>
-            <h2>Model manager</h2>
-          </div>
-          <span>
-            {modelVersions.length} version
-            {modelVersions.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <p className={styles.message}>{modelMessage}</p>
-
-        <div className={styles.directDownloads}>
-          <div>
-            <p className={styles.label}>Direct ONNX downloads</p>
-            <h3>Whisper presets</h3>
-            <p>
-              These use ONNX Community Whisper repositories and download the
-              encoder, merged decoder, tokenizer, and config files into the
-              active Whisper slot.
-            </p>
-          </div>
-          <div className={styles.presetGrid}>
-            {WHISPER_ONNX_DOWNLOADS.map((download) => {
-              const downloadedVersion = getDirectDownloadVersion(download);
-
-              return (
-                <article key={getDirectDownloadKey(download)}>
-                  <strong>{download.label}</strong>
-                  <span>{download.id}</span>
-                  <span>{formatBytes(getKnownDownloadSize(download))}</span>
-                  {downloadedVersion !== undefined ? (
-                    <span className={styles.downloadedBadge}>downloaded</span>
-                  ) : null}
-                  <p>{download.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => void handleDownloadDirectModel(download)}
-                    disabled={
-                      downloadingModel !== null ||
-                      downloadedVersion !== undefined
-                    }
-                  >
-                    {downloadedVersion !== undefined
-                      ? 'Downloaded'
-                      : downloadingModel === 'whisper'
-                        ? 'Downloading...'
-                        : 'Download ONNX'}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className={styles.directDownloads}>
-          <div>
-            <p className={styles.label}>Direct Pyannote ONNX downloads</p>
-            <h3>Token-free diarization building blocks</h3>
-            <p>
-              These community ONNX exports do not require a Hugging Face token.
-              Download segmentation and embedding models to prepare a local
-              diarization pipeline.
-            </p>
-          </div>
-          <div className={styles.presetGrid}>
-            {PYANNOTE_DOWNLOADS.map((download) => {
-              const downloadedVersion = getDirectDownloadVersion(download);
-
-              return (
-                <article key={getDirectDownloadKey(download)}>
-                  <strong>{download.label}</strong>
-                  <span>{download.id}</span>
-                  <span>{formatBytes(getKnownDownloadSize(download))}</span>
-                  {downloadedVersion !== undefined ? (
-                    <span className={styles.downloadedBadge}>downloaded</span>
-                  ) : null}
-                  <p>{download.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => void handleDownloadDirectModel(download)}
-                    disabled={
-                      downloadingModel !== null ||
-                      downloadedVersion !== undefined
-                    }
-                  >
-                    {downloadedVersion !== undefined
-                      ? 'Downloaded'
-                      : downloadingModel === 'pyannote'
-                        ? 'Downloading...'
-                        : 'Download Pyannote'}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className={styles.directDownloads}>
-          <div>
-            <p className={styles.label}>Direct Gemma 4 downloads</p>
-            <h3>ONNX Community Gemma 4 presets</h3>
-            <p>
-              These direct buttons include Q4 ONNX text-generation files from
-              the ONNX Community Gemma 4 repositories.
-            </p>
-          </div>
-          <div className={styles.presetGrid}>
-            {GEMMA_DOWNLOADS.map((download) => {
-              const downloadedVersion = getDirectDownloadVersion(download);
-
-              return (
-                <article key={getDirectDownloadKey(download)}>
-                  <strong>{download.label}</strong>
-                  <span>{download.id}</span>
-                  <span>{formatBytes(getKnownDownloadSize(download))}</span>
-                  {downloadedVersion !== undefined ? (
-                    <span className={styles.downloadedBadge}>downloaded</span>
-                  ) : null}
-                  <p>{download.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => void handleDownloadDirectModel(download)}
-                    disabled={
-                      downloadingModel !== null ||
-                      downloadedVersion !== undefined
-                    }
-                  >
-                    {downloadedVersion !== undefined
-                      ? 'Downloaded'
-                      : downloadingModel === 'gemma4'
-                        ? 'Downloading...'
-                        : 'Download Gemma'}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className={styles.directDownloads}>
-          <div>
-            <p className={styles.label}>Direct Wav2Vec2 ONNX downloads</p>
-            <h3>CTC alignment presets</h3>
-            <p>
-              These ONNX Community Wav2Vec2 CTC models can provide frame-level
-              emissions for transcript-to-timecode alignment, but the alignment
-              engine is not implemented yet.
-            </p>
-          </div>
-          <div className={styles.presetGrid}>
-            {WAV2VEC2_DOWNLOADS.map((download) => {
-              const downloadedVersion = getDirectDownloadVersion(download);
-
-              return (
-                <article key={getDirectDownloadKey(download)}>
-                  <strong>{download.label}</strong>
-                  <span>{download.id}</span>
-                  <span>{formatBytes(getKnownDownloadSize(download))}</span>
-                  {downloadedVersion !== undefined ? (
-                    <span className={styles.downloadedBadge}>downloaded</span>
-                  ) : null}
-                  <p>{download.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => void handleDownloadDirectModel(download)}
-                    disabled={
-                      downloadingModel !== null ||
-                      downloadedVersion !== undefined
-                    }
-                  >
-                    {downloadedVersion !== undefined
-                      ? 'Downloaded'
-                      : downloadingModel === 'wav2vec2'
-                        ? 'Downloading...'
-                        : 'Download Wav2Vec2'}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className={styles.modelGrid}>
-          {MODEL_DOWNLOAD_TARGETS.map((target) => {
-            const versions = getModelVersions(target.model);
-            const activeModel = versions.find((version) => version.active);
-
-            return (
-              <article className={styles.modelCard} key={target.model}>
-                <div>
-                  <strong>{target.label}</strong>
-                  <span>{target.description}</span>
-                  <span>
-                    Active:{' '}
-                    {activeModel === undefined
-                      ? 'none'
-                      : getModelVersionTitle(activeModel)}
-                  </span>
-                </div>
-                <label className={styles.engineModelPicker}>
-                  <span>Set active version</span>
-                  <select
-                    value={activeModel?.version ?? ''}
-                    onChange={(event) =>
-                      void handleSetActiveModelVersion(
-                        target.model,
-                        event.target.value,
-                      )
-                    }
-                    disabled={
-                      versions.length === 0 || downloadingModel !== null
-                    }
-                  >
-                    <option value="">
-                      {versions.length === 0
-                        ? 'No downloaded versions'
-                        : 'Choose an active version'}
-                    </option>
-                    {versions.map((version) => (
-                      <option
-                        key={`${target.model}-${version.version}`}
-                        value={version.version}
-                      >
-                        {getModelVersionTitle(version)}
-                        {version.active ? ' (active)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {versions.length > 0 ? (
-                  <ul className={styles.modelVersionList}>
-                    {versions.map((version) => (
-                      <li key={`${version.model}-${version.version}`}>
-                        <div>
-                          <strong>{getModelVersionTitle(version)}</strong>
-                          <span>{getModelVersionDetail(version)}</span>
-                          <span>
-                            {version.model}
-                            {version.active ? ' | active' : ''}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className={styles.dangerButton}
-                          onClick={() => void handleRemoveModelVersion(version)}
-                          disabled={downloadingModel !== null}
-                        >
-                          Remove
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className={styles.empty}>No models downloaded yet.</p>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      </section>
-    );
-  }
-
-  function RecordingsPage() {
-    return (
-      <>
-        <section className={styles.panel}>
-          <div className={styles.listHeader}>
-            <div>
-              <p className={styles.label}>Recorder</p>
-              <h2>Capture audio</h2>
-            </div>
-            <span data-state={status}>{status}</span>
-          </div>
-          <p className={styles.message}>{message}</p>
-
-          <label className={styles.uploadBox}>
-            <span>Upload recordings</span>
-            <strong>
-              Import MP3, WAV, M4A, WebM, or OGG files into OPFS/audio-files.
-            </strong>
-            <input
-              type="file"
-              accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg"
-              multiple
-              onChange={(event) => {
-                void handleUploadRecordings(event.target.files);
-                event.currentTarget.value = '';
-              }}
-              disabled={
-                status === 'idle' ||
-                status === 'recording' ||
-                status === 'saving'
-              }
-            />
-          </label>
-
-          <div className={styles.actions}>
-            <button
-              type="button"
-              onClick={handleStartRecording}
-              disabled={status !== 'ready'}
-            >
-              Start Recording
-            </button>
-            <button
-              type="button"
-              onClick={handleStopRecording}
-              disabled={status !== 'recording'}
-            >
-              Stop & Save
-            </button>
-            <button
-              type="button"
-              onClick={handleCancelRecording}
-              disabled={status !== 'recording'}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => void refreshFiles()}
-              disabled={
-                status === 'idle' ||
-                status === 'recording' ||
-                status === 'saving'
-              }
-            >
-              Refresh Files
-            </button>
-          </div>
-
-          {lastRecording !== null ? (
-            <p className={styles.saved}>
-              Last saved: <strong>{lastRecording.fileName}</strong> (
-              {formatBytes(lastRecording.size)})
-            </p>
-          ) : null}
-        </section>
-
-        <section className={styles.panel}>
-          <div className={styles.listHeader}>
-            <div>
-              <p className={styles.label}>OPFS/audio-files</p>
-              <h2>Stored recordings</h2>
-            </div>
-            <span>
-              {files.length} file{files.length === 1 ? '' : 's'}
-            </span>
-          </div>
-
-          {files.length === 0 ? (
-            <p className={styles.empty}>No recordings stored yet.</p>
-          ) : (
-            <ul className={styles.fileList}>
-              {files.map((file) => (
-                <li key={`${file.name}-${file.updatedAt}`}>
-                  <div>
-                    <strong>{file.name}</strong>
-                    <span>
-                      {file.type} | {formatBytes(file.size)} |{' '}
-                      {formatDate(file.updatedAt)}
-                    </span>
-                  </div>
-                  <audio controls src={file.url} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </>
-    );
-  }
-
-  function TranscriptionPage() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.listHeader}>
-          <div>
-            <p className={styles.label}>Transcription</p>
-            <h2>Run Whisper only</h2>
-          </div>
-          <span data-state={engineStatus}>{engineStatus}</span>
-        </div>
-        <p className={styles.message}>{engineMessage}</p>
-
-        <div className={styles.runtimeStatus} data-state={webGpuSupport}>
-          <strong>{getWebGpuSupportLabel(webGpuSupport)}</strong>
-          <span>
-            {webGpuSupport === 'supported'
-              ? 'Whisper is pinned to WASM; current q8 ONNX exports fail in ORT Web.'
-              : 'Whisper will run on the WASM backend.'}
-          </span>
-        </div>
-
-        <div className={styles.engineModelGrid}>
-          <div className={styles.engineModelPicker}>
-            <span>Whisper model</span>
-            <strong>
-              {(() => {
-                const activeWhisper = getActiveModelVersion('whisper');
-                return activeWhisper === undefined
-                  ? 'No active version'
-                  : getModelVersionTitle(activeWhisper);
-              })()}
-            </strong>
-          </div>
-        </div>
-
-        <ul className={styles.engineProgress}>
-          <li data-status={engineProgress.transcription ?? 'pending'}>
-            <span>Transcription</span>
-            <small>{engineProgress.transcription ?? 'pending'}</small>
-          </li>
-        </ul>
-
-        <div className={styles.engineControls}>
-          <select
-            value={selectedAudioName}
-            onChange={(event) => setSelectedAudioName(event.target.value)}
-            disabled={files.length === 0 || engineStatus === 'processing'}
-          >
-            <option value="">Select recording</option>
-            {files.map((file) => (
-              <option
-                key={`${file.name}-transcription-option`}
-                value={file.name}
-              >
-                {file.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleRunTranscription()}
-            disabled={
-              selectedAudioName.length === 0 || engineStatus === 'processing'
-            }
-          >
-            Transcribe Only
-          </button>
-        </div>
-
-        {transcriptionResult !== null ? (
-          <div className={styles.transcriptResult}>
-            <h3>Transcript</h3>
-            <p>{transcriptionResult.text}</p>
-            <ul>
-              {transcriptionResult.segments.map((segment, index) => (
-                <li key={`${segment.startSeconds}-${index}`}>
-                  <strong>{formatTimestamp(segment.startSeconds)}</strong>
-                  <span>{segment.text}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </section>
-    );
-  }
-
-  function DiarizationPage() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.listHeader}>
-          <div>
-            <p className={styles.label}>Diarization</p>
-            <h2>Run Pyannote only</h2>
-          </div>
-          <span data-state={engineStatus}>{engineStatus}</span>
-        </div>
-        <p className={styles.message}>{engineMessage}</p>
-
-        <div className={styles.engineModelGrid}>
-          <div className={styles.engineModelPicker}>
-            <span>Pyannote model</span>
-            <strong>
-              {(() => {
-                const activePyannote = getActiveModelVersion('pyannote');
-                return activePyannote === undefined
-                  ? 'No active version'
-                  : getModelVersionTitle(activePyannote);
-              })()}
-            </strong>
-          </div>
-          <label className={styles.engineModelPicker}>
-            <span>Number of speakers (optional)</span>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              placeholder="Auto-detect"
-              value={numSpeakersHint ?? ''}
-              onChange={(event) => {
-                const val = event.target.value;
-                setNumSpeakersHint(
-                  val === '' ? null : Math.max(1, parseInt(val, 10)),
-                );
-              }}
-              disabled={engineStatus === 'processing'}
-            />
-          </label>
-        </div>
-
-        <ul className={styles.engineProgress}>
-          <li data-status={engineProgress.diarization ?? 'pending'}>
-            <span>Diarization</span>
-            <small>{engineProgress.diarization ?? 'pending'}</small>
-          </li>
-        </ul>
-
-        {engineBarValue !== null || engineStatus === 'processing' ? (
-          <div className={styles.progressTrack} aria-hidden="true">
-            <div
-              data-indeterminate={
-                engineBarValue === null && engineStatus === 'processing'
-              }
-              style={
-                engineBarValue !== null
-                  ? { width: `${engineBarValue}%` }
-                  : undefined
-              }
-            />
-          </div>
-        ) : null}
-
-        <div className={styles.engineControls}>
-          <select
-            value={selectedAudioName}
-            onChange={(event) => setSelectedAudioName(event.target.value)}
-            disabled={files.length === 0 || engineStatus === 'processing'}
-          >
-            <option value="">Select recording</option>
-            {files.map((file) => (
-              <option key={`${file.name}-diarization-option`} value={file.name}>
-                {file.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleRunDiarization()}
-            disabled={
-              selectedAudioName.length === 0 || engineStatus === 'processing'
-            }
-          >
-            Diarize Only
-          </button>
-        </div>
-
-        <div ref={engineLogRef} className={styles.engineLog}>
-          {engineLog.length === 0 ? (
-            <p className={styles.empty}>Waiting for output...</p>
-          ) : (
-            engineLog.map((line, index) => (
-              <p key={`${index}-${line.slice(0, 32)}`}>{line}</p>
-            ))
-          )}
-        </div>
-
-        {diarizationResult !== null ? (
-          <div className={styles.transcriptResult}>
-            <h3>
-              Speaker turns —{' '}
-              {[...new Set(diarizationResult.map((t) => t.speaker))].length}{' '}
-              speaker
-              {[...new Set(diarizationResult.map((t) => t.speaker))].length ===
-              1
-                ? ''
-                : 's'}
-              , {diarizationResult.length} turn
-              {diarizationResult.length === 1 ? '' : 's'}
-            </h3>
-            <ul>
-              {diarizationResult.map((turn, index) => (
-                <li key={`${turn.startSeconds}-${index}`}>
-                  <strong>{turn.speaker}</strong>
-                  <span>
-                    {formatTimestamp(turn.startSeconds)} →{' '}
-                    {formatTimestamp(turn.endSeconds)} (
-                    {(turn.endSeconds - turn.startSeconds).toFixed(1)}s)
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </section>
-    );
-  }
-
-  function EnginePage() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.listHeader}>
-          <div>
-            <p className={styles.label}>Engine</p>
-            <h2>Process a meeting</h2>
-          </div>
-          <span data-state={engineStatus}>{engineStatus}</span>
-        </div>
-        <p className={styles.message}>{engineMessage}</p>
-
-        <div className={styles.runtimeStatus} data-state={webGpuSupport}>
-          <strong>{getWebGpuSupportLabel(webGpuSupport)}</strong>
-          <span>
-            {webGpuSupport === 'supported'
-              ? 'Whisper is pinned to WASM; current q8 ONNX exports fail in ORT Web.'
-              : 'Whisper will run on the WASM backend.'}
-          </span>
-        </div>
-
-        <ul className={styles.engineProgress}>
-          {(
-            [
-              ['transcription', 'Transcription'],
-              ['diarization', 'Diarization'],
-              ['speaker-naming', 'Speaker naming'],
-            ] as const
-          ).map(([stage, label]) => (
-            <li key={stage} data-status={engineProgress[stage] ?? 'pending'}>
-              <span>{label}</span>
-              <small>{engineProgress[stage] ?? 'pending'}</small>
-            </li>
-          ))}
-        </ul>
-
-        <div className={styles.engineModelGrid}>
-          {MODEL_DOWNLOAD_TARGETS.map((target) => {
-            const activeModel = getActiveModelVersion(target.model);
-
-            return (
-              <div key={target.model} className={styles.engineModelPicker}>
-                <span>{target.label} model</span>
-                <strong>
-                  {activeModel === undefined
-                    ? 'No active version'
-                    : getModelVersionTitle(activeModel)}
-                </strong>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className={styles.engineControls}>
-          <select
-            value={selectedAudioName}
-            onChange={(event) => setSelectedAudioName(event.target.value)}
-            disabled={files.length === 0 || engineStatus === 'processing'}
-          >
-            <option value="">Select recording</option>
-            {files.map((file) => (
-              <option key={`${file.name}-option`} value={file.name}>
-                {file.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleRunEngine()}
-            disabled={
-              selectedAudioName.length === 0 || engineStatus === 'processing'
-            }
-          >
-            Run Engine
-          </button>
-        </div>
-
-        {meetingNotes !== null ? (
-          <div className={styles.transcriptResult}>
-            <h3>{meetingNotes.meeting.title}</h3>
-            <p>{meetingNotes.transcript.text}</p>
-            <ul>
-              {meetingNotes.transcript.segments.map((segment, index) => (
-                <li key={`${segment.startSeconds}-${index}`}>
-                  <strong>{segment.speakerName}</strong>
-                  <span>{segment.text}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </section>
-    );
-  }
 
   return (
     <main className={styles.shell}>
@@ -2276,15 +1695,151 @@ export function App() {
           </article>
         </div>
 
-        {activePage === 'models' ? <ModelsPage /> : null}
+        {activePage === 'models' ? (
+          <ModelsPage
+            modelVersions={modelVersions}
+            modelMessage={modelMessage}
+            downloadingModel={downloadingModel}
+            modelTargets={MODEL_DOWNLOAD_TARGETS}
+            downloadSections={[
+              {
+                eyebrow: 'Direct ONNX downloads',
+                title: 'Whisper presets',
+                description:
+                  'These use ONNX Community Whisper repositories and download the encoder, merged decoder, tokenizer, and config files into the active Whisper slot.',
+                downloads: WHISPER_ONNX_DOWNLOADS,
+                buttonLabel: 'Download ONNX',
+                downloadingLabel: 'Downloading...',
+              },
+              {
+                eyebrow: 'Direct Pyannote ONNX downloads',
+                title: 'Token-free diarization building blocks',
+                description:
+                  'These community ONNX exports do not require a Hugging Face token. Download segmentation and embedding models to prepare a local diarization pipeline.',
+                downloads: PYANNOTE_DOWNLOADS,
+                buttonLabel: 'Download Pyannote',
+                downloadingLabel: 'Downloading...',
+              },
+              {
+                eyebrow: 'Direct Gemma 4 downloads',
+                title: 'ONNX Community Gemma 4 presets',
+                description:
+                  'These direct buttons include Q4 ONNX text-generation files from the ONNX Community Gemma 4 repositories.',
+                downloads: GEMMA_DOWNLOADS,
+                buttonLabel: 'Download Gemma',
+                downloadingLabel: 'Downloading...',
+              },
+              {
+                eyebrow: 'Direct Wav2Vec2 ONNX downloads',
+                title: 'CTC alignment presets',
+                description:
+                  'These ONNX Community Wav2Vec2 CTC models can provide frame-level emissions for transcript-to-timecode alignment, but the alignment engine is not implemented yet.',
+                downloads: WAV2VEC2_DOWNLOADS,
+                buttonLabel: 'Download Wav2Vec2',
+                downloadingLabel: 'Downloading...',
+              },
+            ]}
+            getKnownDownloadSize={getKnownDownloadSize}
+            getDirectDownloadKey={getDirectDownloadKey}
+            getDirectDownloadVersion={getDirectDownloadVersion}
+            getModelVersions={getModelVersions}
+            getModelVersionTitle={getModelVersionTitle}
+            getModelVersionDetail={getModelVersionDetail}
+            onDownloadDirectModel={(download) =>
+              void handleDownloadDirectModel(download)
+            }
+            onSetActiveModelVersion={(model, version) =>
+              void handleSetActiveModelVersion(model, version)
+            }
+            onRemoveModelVersion={(version) =>
+              void handleRemoveModelVersion(version)
+            }
+            formatBytes={formatBytes}
+          />
+        ) : null}
 
-        {activePage === 'recordings' ? <RecordingsPage /> : null}
+        {activePage === 'recordings' ? (
+          <RecordingsPage
+            status={status}
+            message={message}
+            files={files}
+            lastRecording={lastRecording}
+            onUploadRecordings={(uploadedFiles) =>
+              void handleUploadRecordings(uploadedFiles)
+            }
+            onStartRecording={handleStartRecording}
+            onStopRecording={handleStopRecording}
+            onCancelRecording={handleCancelRecording}
+            onRefreshFiles={() => void refreshFiles()}
+            onDeleteRecording={(file) => void handleDeleteRecording(file)}
+            formatBytes={formatBytes}
+            formatDate={formatDate}
+          />
+        ) : null}
 
-        {activePage === 'transcription' ? <TranscriptionPage /> : null}
+        {activePage === 'transcription' ? (
+          <TranscriptionPage
+            engineStatus={engineStatus}
+            engineMessage={engineMessage}
+            webGpuSupport={webGpuSupport}
+            engineProgress={engineProgress}
+            selectedAudioName={selectedAudioName}
+            files={files}
+            transcriptionResult={transcriptionResult}
+            engineLog={engineLog}
+            engineBarValue={engineBarValue}
+            liveTranscriptSegments={liveTranscriptSegments}
+            activeWhisper={getActiveModelVersion('whisper')}
+            onSelectedAudioNameChange={setSelectedAudioName}
+            onRunTranscription={() => void handleRunTranscription()}
+            getWebGpuSupportLabel={getWebGpuSupportLabel}
+            getModelVersionTitle={getModelVersionTitle}
+          />
+        ) : null}
 
-        {activePage === 'diarization' ? <DiarizationPage /> : null}
+        {activePage === 'diarization' ? (
+          <DiarizationPage
+            engineStatus={engineStatus}
+            engineMessage={engineMessage}
+            engineProgress={engineProgress}
+            engineBarValue={engineBarValue}
+            selectedAudioName={selectedAudioName}
+            files={files}
+            numSpeakersHint={numSpeakersHint}
+            diarizationResult={diarizationResult}
+            engineLog={engineLog}
+            engineLogRef={engineLogRef}
+            activePyannote={getActiveModelVersion('pyannote')}
+            onSelectedAudioNameChange={setSelectedAudioName}
+            onNumSpeakersHintChange={setNumSpeakersHint}
+            onRunDiarization={() => void handleRunDiarization()}
+            getModelVersionTitle={getModelVersionTitle}
+            formatTimestamp={formatTimestamp}
+          />
+        ) : null}
 
-        {activePage === 'engine' ? <EnginePage /> : null}
+        {activePage === 'engine' ? (
+          <EnginePage
+            engineStatus={engineStatus}
+            engineMessage={engineMessage}
+            webGpuSupport={webGpuSupport}
+            engineProgress={engineProgress}
+            selectedAudioName={selectedAudioName}
+            files={files}
+            meetingNotes={meetingNotes}
+            engineLog={engineLog}
+            engineBarValue={engineBarValue}
+            liveTranscriptSegments={liveTranscriptSegments}
+            numSpeakersHint={numSpeakersHint}
+            modelTargets={MODEL_DOWNLOAD_TARGETS}
+            onSelectedAudioNameChange={setSelectedAudioName}
+            onNumSpeakersHintChange={setNumSpeakersHint}
+            onRunEngine={() => void handleRunEngine()}
+            getWebGpuSupportLabel={getWebGpuSupportLabel}
+            getActiveModelVersion={getActiveModelVersion}
+            getModelVersionTitle={getModelVersionTitle}
+          />
+        ) : null}
       </section>
 
       {engineDialogOpen ? (
@@ -2357,7 +1912,6 @@ export function App() {
                 <div className={styles.liveTranscriptBody}>
                   {liveTranscriptSegments.map((segment, index) => (
                     <p key={`${segment.startSeconds}-${index}`}>
-                      <time>{formatTimestamp(segment.startSeconds)}</time>
                       <span>{segment.text}</span>
                     </p>
                   ))}

@@ -1,0 +1,1 @@
+export type TimestampedText = { timestampInMs: number; text: string };

@@ -719,9 +719,7 @@
 }
 
 .liveTranscriptBody p {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: 4.25rem minmax(0, 1fr);
+  display: block;
   line-height: 1.6;
   margin: 0;
 }
@@ -734,6 +732,8 @@
 
 .liveTranscriptBody span {
   color: #edf3ff;
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .transcriptResult {
@@ -762,8 +762,8 @@
 .transcriptResult li {
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 16px;
-  display: grid;
-  gap: 0.35rem;
+  display: block;
+  line-height: 1.65;
   padding: 0.85rem;
 }
 
@@ -773,6 +773,8 @@
 
 .transcriptResult li span {
   color: #dbeafe;
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .downloadOverlay {

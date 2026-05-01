@@ -1,12 +1,11 @@
 /// <reference lib="webworker" />
-import {
-  Engine,
-  type EngineProgressEvent,
-  type MeetingNotes,
-  PipelineFactory,
-  type SpeakerTurn,
-  type Transcript,
-} from '@notetaker/engine';
+import { Engine } from '../../../../packages/engine/src/lib/engine';
+import { PipelineFactory } from '../../../../packages/engine/src/lib/pipeline-factory';
+import { configureTransformersCache } from '../../../../packages/engine/src/lib/transformers-cache';
+import type { EngineProgressEvent } from '../../../../packages/engine/src/lib/engine-progress-event';
+import type { MeetingNotes } from '../../../../packages/engine/src/lib/models/meeting-notes';
+import type { SpeakerTurn } from '../../../../packages/engine/src/lib/models/speaker-turn';
+import type { Transcript } from '../../../../packages/engine/src/lib/models/transcript';
 import { FileSystem } from '@notetaker/filesystem';
 import { ModelManager } from '@notetaker/model-manager';
 
@@ -27,7 +26,10 @@ function log(line: string): void {
   currentLogger?.(line);
 }
 
-function estimateFragmentEndSeconds(startSeconds: number, text: string): number {
+function estimateFragmentEndSeconds(
+  startSeconds: number,
+  text: string,
+): number {
   const wordCount = text.split(/\s+/).filter(Boolean).length;
 
   return startSeconds + Math.max(1, wordCount * 0.45);
@@ -95,6 +97,7 @@ export type EngineWorkerResponse =
 
 let modelManagerPromise: Promise<ModelManager> | null = null;
 
+console.log('[engine-worker] module initialized');
 function getModelManager(): Promise<ModelManager> {
   if (modelManagerPromise === null) {
     modelManagerPromise = ModelManager.create(new FileSystem());
@@ -104,11 +107,13 @@ function getModelManager(): Promise<ModelManager> {
 }
 
 self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
+  console.log('[engine-worker] message received', event);
   const {
     id,
     mode = 'engine',
     fileName,
     audio,
+    numSpeakers = null,
   } = event.data;
 
   void (async () => {
@@ -118,6 +123,7 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
     };
     try {
       const modelManager = await getModelManager();
+      configureTransformersCache(modelManager);
       log(
         `[runtime] crossOriginIsolated=${globalThis.crossOriginIsolated}; hardwareConcurrency=${navigator.hardwareConcurrency ?? 'unknown'}`,
       );
@@ -140,7 +146,7 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
             log(
               `[transcription] worker received ${updates.length} fragment update(s).`,
             );
-            fragments.push(...updates);
+            fragments.splice(0, fragments.length, ...updates);
             const segments = toWorkerTranscriptSegments(fragments);
             const message: EngineWorkerResponse = {
               id,
@@ -186,7 +192,10 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
           event: { stage: 'diarization', status: 'started' },
         };
         (self as DedicatedWorkerGlobalScope).postMessage(progress);
-        const turns = await engine.diarizeAudio(audio);
+        const turns = await engine.diarizeAudio(audio, {
+          speakerCountHint: numSpeakers,
+          debug: log,
+        });
         const completed: EngineWorkerResponse = {
           id,
           type: 'progress',
@@ -220,6 +229,20 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
             (self as DedicatedWorkerGlobalScope).postMessage(progress);
           },
           onDebug: log,
+          onPartialTranscript: (fragments) => {
+            log(
+              `[transcription] worker received ${fragments.length} partial fragment update(s).`,
+            );
+            const segments = toWorkerTranscriptSegments(fragments);
+            const message: EngineWorkerResponse = {
+              id,
+              type: 'live-transcript',
+              text: fragments.map((fragment) => fragment.text).join(' '),
+              segments,
+            };
+            (self as DedicatedWorkerGlobalScope).postMessage(message);
+          },
+          speakerCountHint: numSpeakers,
         },
       );
       const sanitized: MeetingNotes = {
