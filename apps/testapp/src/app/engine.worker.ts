@@ -1,25 +1,14 @@
 /// <reference lib="webworker" />
 import {
-  ActiveModelSpeakerDiarizationEngine,
-  ActiveModelTranscriptionEngine,
   Engine,
   type EngineProgressEvent,
   type MeetingNotes,
-  type SpeakerNameGuess,
-  type SpeakerNamingInput,
-  type SpeakerNamingModel,
+  PipelineFactory,
   type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
 import { FileSystem } from '@notetaker/filesystem';
-import {
-  ModelManager,
-  type ManagedModel,
-  type ModelVersionManifestEntry,
-} from '@notetaker/model-manager';
-
-type WorkerModelSelections = Partial<Record<ManagedModel, string>>;
-type WhisperDtype = 'q8' | 'fp32';
+import { ModelManager } from '@notetaker/model-manager';
 
 interface WorkerTranscriptSegment {
   text: string;
@@ -27,64 +16,39 @@ interface WorkerTranscriptSegment {
   endSeconds: number;
 }
 
+interface TimestampedText {
+  timestampInMs: number;
+  text: string;
+}
+
 let currentLogger: ((line: string) => void) | null = null;
-let currentBarEmitter: ((value: number | null) => void) | null = null;
 
 function log(line: string): void {
   currentLogger?.(line);
 }
 
-function emitBar(value: number | null): void {
-  currentBarEmitter?.(value);
+function estimateFragmentEndSeconds(startSeconds: number, text: string): number {
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+  return startSeconds + Math.max(1, wordCount * 0.45);
 }
 
-class ActiveModelSpeakerNamingModel implements SpeakerNamingModel {
-  readonly #modelManager: ModelManager;
-  readonly #selectedModels: WorkerModelSelections;
+function toWorkerTranscriptSegments(
+  fragments: TimestampedText[],
+): WorkerTranscriptSegment[] {
+  return fragments.map((fragment, index) => {
+    const nextFragment = fragments[index + 1];
+    const startSeconds = fragment.timestampInMs / 1000;
 
-  constructor(
-    modelManager: ModelManager,
-    selectedModels: WorkerModelSelections,
-  ) {
-    this.#modelManager = modelManager;
-    this.#selectedModels = selectedModels;
-  }
-
-  async nameSpeakers(_input: SpeakerNamingInput): Promise<SpeakerNameGuess[]> {
-    await requireModelVersion(
-      this.#modelManager,
-      'gemma4',
-      this.#selectedModels.gemma4,
-    );
-
-    return [];
-  }
-}
-
-async function requireModelVersion(
-  modelManager: ModelManager,
-  model: ManagedModel,
-  selectedVersion?: string,
-): Promise<ModelVersionManifestEntry> {
-  if (selectedVersion !== undefined && selectedVersion.length > 0) {
-    const selectedModel = await modelManager.getVersion(model, selectedVersion);
-
-    if (selectedModel === null) {
-      throw new Error(
-        `Selected ${model} model ${selectedVersion} is not available.`,
-      );
-    }
-
-    return selectedModel.manifest;
-  }
-
-  const activeModel = await modelManager.getActiveVersion(model);
-
-  if (activeModel === null) {
-    throw new Error(`Download and activate a ${model} model first.`);
-  }
-
-  return activeModel.manifest;
+    return {
+      text: fragment.text,
+      startSeconds,
+      endSeconds:
+        nextFragment?.timestampInMs !== undefined
+          ? nextFragment.timestampInMs / 1000
+          : estimateFragmentEndSeconds(startSeconds, fragment.text),
+    };
+  });
 }
 
 export interface EngineWorkerRequest {
@@ -92,9 +56,7 @@ export interface EngineWorkerRequest {
   mode?: 'engine' | 'transcription' | 'diarization';
   fileName: string;
   audio: Float32Array;
-  selectedModels?: WorkerModelSelections;
   useWebGpu?: boolean;
-  whisperDtype?: WhisperDtype;
   numSpeakers?: number | null;
 }
 
@@ -147,58 +109,52 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
     mode = 'engine',
     fileName,
     audio,
-    selectedModels = {},
-    useWebGpu = false,
-    whisperDtype = 'q8',
-    numSpeakers = null,
   } = event.data;
-
 
   void (async () => {
     currentLogger = (line) => {
       const message: EngineWorkerResponse = { id, type: 'log', line };
       (self as DedicatedWorkerGlobalScope).postMessage(message);
     };
-    currentBarEmitter = (value) => {
-      const message: EngineWorkerResponse = { id, type: 'bar', value };
-      (self as DedicatedWorkerGlobalScope).postMessage(message);
-    };
-
     try {
       const modelManager = await getModelManager();
       log(
         `[runtime] crossOriginIsolated=${globalThis.crossOriginIsolated}; hardwareConcurrency=${navigator.hardwareConcurrency ?? 'unknown'}`,
       );
-      const transcription = new ActiveModelTranscriptionEngine({
-        modelManager,
-        selectedModels,
-        preferWebGpu: useWebGpu,
-        whisperDtype,
-        onLog: log,
-        onProgress: emitBar,
-        onTranscriptUpdate: (update) => {
-          const message: EngineWorkerResponse = {
-            id,
-            type: 'live-transcript',
-            text: update.text,
-            segments: update.segments,
-          };
-          (self as DedicatedWorkerGlobalScope).postMessage(message);
-        },
-      });
+      const engine = new Engine(new PipelineFactory(), modelManager);
 
       if (mode === 'transcription') {
+        const fragments: TimestampedText[] = [];
         const progress: EngineWorkerResponse = {
           id,
           type: 'progress',
           event: { stage: 'transcription', status: 'started' },
         };
         (self as DedicatedWorkerGlobalScope).postMessage(progress);
-        const transcript = await transcription.transcribe({
-          id: fileName,
-          title: fileName,
+        log(
+          `[transcription] worker received ${audio.length} samples for ${fileName}.`,
+        );
+        const transcriptText = await engine.transcribeAudio(
           audio,
-        });
+          (updates) => {
+            log(
+              `[transcription] worker received ${updates.length} fragment update(s).`,
+            );
+            fragments.push(...updates);
+            const segments = toWorkerTranscriptSegments(fragments);
+            const message: EngineWorkerResponse = {
+              id,
+              type: 'live-transcript',
+              text: fragments.map((fragment) => fragment.text).join(' '),
+              segments,
+            };
+            (self as DedicatedWorkerGlobalScope).postMessage(message);
+          },
+          log,
+        );
+        log(
+          `[transcription] worker completed with transcript length=${transcriptText.length}; fragments=${fragments.length}.`,
+        );
         const completed: EngineWorkerResponse = {
           id,
           type: 'progress',
@@ -210,7 +166,14 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
           type: 'result',
           ok: true,
           mode: 'transcription',
-          transcript,
+          transcript: {
+            text: transcriptText,
+            segments: toWorkerTranscriptSegments(fragments).map((segment) => ({
+              ...segment,
+              speaker: 'SPEAKER_0',
+              speakerName: 'SPEAKER_0',
+            })),
+          },
         };
         (self as DedicatedWorkerGlobalScope).postMessage(response);
         return;
@@ -223,18 +186,7 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
           event: { stage: 'diarization', status: 'started' },
         };
         (self as DedicatedWorkerGlobalScope).postMessage(progress);
-        const diarization = new ActiveModelSpeakerDiarizationEngine({
-          modelManager,
-          selectedModels,
-          numSpeakers,
-          onLog: log,
-          onProgress: emitBar,
-        });
-        const turns = await diarization.diarize({
-          id: fileName,
-          title: fileName,
-          audio,
-        });
+        const turns = await engine.diarizeAudio(audio);
         const completed: EngineWorkerResponse = {
           id,
           type: 'progress',
@@ -252,17 +204,6 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
         return;
       }
 
-      const engine = new Engine({
-        transcription,
-        diarization: new ActiveModelSpeakerDiarizationEngine({
-          modelManager,
-          selectedModels,
-        }),
-        speakerNaming: new ActiveModelSpeakerNamingModel(
-          modelManager,
-          selectedModels,
-        ),
-      });
       const notes = await engine.processMeeting(
         {
           id: fileName,
@@ -278,6 +219,7 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
             };
             (self as DedicatedWorkerGlobalScope).postMessage(progress);
           },
+          onDebug: log,
         },
       );
       const sanitized: MeetingNotes = {
@@ -303,7 +245,6 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
       (self as DedicatedWorkerGlobalScope).postMessage(response);
     } finally {
       currentLogger = null;
-      currentBarEmitter = null;
     }
   })();
 });

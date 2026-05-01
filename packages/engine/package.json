@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "@notetaker/model-manager": "workspace:*"
+    "@notetaker/model-manager": "workspace:*",
+    "@notetaker/filesystem": "workspace:*"
   }
 }

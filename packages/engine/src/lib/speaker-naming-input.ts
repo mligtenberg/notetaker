@@ -1,9 +1,9 @@
 import type { Meeting } from './models/meeting';
-import type { SpeakerTranscriptSegment } from './models/speaker-transcript-segment';
+import type { TranscriptSegment } from './models/transcript-segment';
 
 export interface SpeakerNamingInput {
   meeting: Meeting;
   transcript: string;
-  segments: Omit<SpeakerTranscriptSegment, 'speakerName'>[];
+  segments: Omit<TranscriptSegment, 'speakerName'>[];
   speakers: string[];
 }

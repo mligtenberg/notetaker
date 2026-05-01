@@ -1,10 +1,12 @@
 import { FileSystem } from '@notetaker/filesystem';
 
-export type ManagedModel = 'whisper' | 'pyannote' | 'gemma4';
+export type ManagedModel = 'whisper' | 'pyannote' | 'gemma4' | 'wav2vec2';
 
 export interface ModelVersionManifestEntry {
   model: ManagedModel;
+  modelName: string;
   version: string;
+  quantization?: string;
   files: ModelFileManifestEntry[];
   active: boolean;
   createdAt: string;
@@ -21,7 +23,9 @@ export interface ModelFileManifestEntry {
 
 export interface AddModelVersionOptions {
   model: ManagedModel;
+  modelName?: string;
   version: string;
+  quantization?: string;
   files: ModelVersionFile[];
   activate?: boolean;
   metadata?: Record<string, unknown>;
@@ -44,7 +48,12 @@ interface ModelManifest {
 }
 
 const MANIFEST_FILE_NAME = 'manifest.json';
-const MODEL_NAMES = ['whisper', 'pyannote', 'gemma4'] as const satisfies readonly ManagedModel[];
+const MODEL_NAMES = [
+  'whisper',
+  'pyannote',
+  'gemma4',
+  'wav2vec2',
+] as const satisfies readonly ManagedModel[];
 
 export class ModelManager {
   readonly modelsDirectoryHandle: FileSystemDirectoryHandle;
@@ -80,7 +89,9 @@ export class ModelManager {
     const existingEntry = manifest.models[options.model][options.version];
     const entry: ModelVersionManifestEntry = {
       model: options.model,
+      modelName: options.modelName ?? existingEntry?.modelName ?? options.version,
       version: options.version,
+      quantization: options.quantization ?? existingEntry?.quantization,
       files: fileEntries,
       active: options.activate ?? existingEntry?.active ?? false,
       createdAt: existingEntry?.createdAt ?? now,
@@ -297,6 +308,7 @@ export class ModelManager {
         whisper: {},
         pyannote: {},
         gemma4: {},
+        wav2vec2: {},
       },
     };
   }
@@ -310,9 +322,17 @@ export class ModelManager {
     const normalized = this.#createEmptyManifest();
 
     for (const model of MODEL_NAMES) {
-      normalized.models[model] = {
-        ...partialManifest.models?.[model],
-      };
+      const versions = partialManifest.models?.[model] ?? {};
+
+      normalized.models[model] = Object.fromEntries(
+        Object.entries(versions).map(([version, entry]) => [
+          version,
+          {
+            ...entry,
+            modelName: entry.modelName ?? entry.version,
+          },
+        ]),
+      );
     }
 
     return normalized;

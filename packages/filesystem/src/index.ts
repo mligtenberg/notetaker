@@ -1,1 +1,1 @@
-export * from './lib/filesystem.js';
+export * from './lib/filesystem';

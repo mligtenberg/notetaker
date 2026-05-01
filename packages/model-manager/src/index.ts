@@ -1,1 +1,1 @@
-export * from './lib/model-manager.js';
+export * from './lib/model-manager';

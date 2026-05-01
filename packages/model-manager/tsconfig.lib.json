@@ -6,9 +6,7 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
     "emitDeclarationOnly": true,
-    "forceConsistentCasingInFileNames": true,
-    "lib": ["es2022", "dom", "dom.iterable"],
-    "types": ["node"]
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
   "references": [

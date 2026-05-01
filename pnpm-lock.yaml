@@ -116,11 +116,18 @@ importers:
       '@huggingface/transformers':
         specifier: ^4.2.0
         version: 4.2.0
+      '@notetaker/filesystem':
+        specifier: workspace:*
+        version: link:../filesystem
       '@notetaker/model-manager':
         specifier: workspace:*
         version: link:../model-manager
 
-  packages/filesystem: {}
+  packages/filesystem:
+    dependencies:
+      '@notetaker/filesystem':
+        specifier: workspace:*
+        version: 'link:'
 
   packages/model-manager:
     dependencies:

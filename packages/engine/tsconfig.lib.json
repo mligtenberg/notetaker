@@ -6,14 +6,13 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
     "emitDeclarationOnly": true,
-    "forceConsistentCasingInFileNames": true,
-    "lib": ["es2022"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "types": ["node"]
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
   "references": [
+    {
+      "path": "../filesystem/tsconfig.lib.json"
+    },
     {
       "path": "../model-manager/tsconfig.lib.json"
     }

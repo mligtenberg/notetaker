@@ -4,6 +4,9 @@
   },
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "analytics": false,
+  "sync": {
+    "applyChanges": true
+  },
   "plugins": [
     {
       "plugin": "@nx/js/typescript",
