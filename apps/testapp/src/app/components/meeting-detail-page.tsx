@@ -34,11 +34,13 @@ interface SpeakerWordTurn {
   wordCount: number;
 }
 
-interface SpeakerMergePopoverState {
+interface SpeakerContextMenuState {
   sourceSpeaker: string;
   x: number;
   y: number;
 }
+
+type SpeakerContextMenuMode = 'menu' | 'rename' | 'merge';
 
 interface LiveTranscriptSegment {
   text: string;
@@ -290,7 +292,9 @@ export function MeetingDetailPage({
                 audioRef={diarizationAudioRef}
                 turns={turns}
                 setTurns={setTurns}
+                loadArtifact={loadArtifact}
                 saveArtifact={saveArtifact}
+                onSpeakerNamesSaved={() => setSpeakerNamesSaved(true)}
                 formatTimestamp={formatTimestamp}
               />
             )}
@@ -330,6 +334,7 @@ export function MeetingDetailPage({
             revision={artifactRevision}
             loadArtifact={loadArtifact}
             saveArtifact={saveArtifact}
+            onSpeakerNamesSaved={() => setSpeakerNamesSaved(true)}
             formatTimestamp={formatTimestamp}
           />
         </>
@@ -745,11 +750,16 @@ interface DiarizationArtifactViewProps {
   audioRef: RefObject<HTMLAudioElement | null>;
   turns: SpeakerTurn[];
   setTurns: Dispatch<SetStateAction<SpeakerTurn[] | null>>;
+  loadArtifact: <U>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ) => Promise<U | null>;
   saveArtifact: <U>(
     meetingId: string,
     kind: MeetingArtifactKind,
     data: U,
   ) => Promise<void>;
+  onSpeakerNamesSaved: () => void;
   formatTimestamp: (seconds: number) => string;
 }
 
@@ -760,11 +770,13 @@ function DiarizationArtifactView({
   audioRef,
   turns,
   setTurns,
+  loadArtifact,
   saveArtifact,
+  onSpeakerNamesSaved,
   formatTimestamp,
 }: DiarizationArtifactViewProps) {
-  const [mergePopover, setMergePopover] =
-    useState<SpeakerMergePopoverState | null>(null);
+  const [speakerMenu, setSpeakerMenu] =
+    useState<SpeakerContextMenuState | null>(null);
   const speakers = collectSpeakers(turns);
 
   async function handleMerge(
@@ -775,7 +787,19 @@ function DiarizationArtifactView({
 
     await saveArtifact(meetingId, 'diarization', mergedTurns);
     setTurns(mergedTurns);
-    setMergePopover(null);
+    setSpeakerMenu(null);
+  }
+
+  async function handleRename(speaker: string, name: string): Promise<void> {
+    await saveSpeakerNameArtifact(
+      meetingId,
+      speaker,
+      name,
+      loadArtifact,
+      saveArtifact,
+    );
+    onSpeakerNamesSaved();
+    setSpeakerMenu(null);
   }
 
   return (
@@ -798,14 +822,14 @@ function DiarizationArtifactView({
             className={styles.playbackSegment}
             tabIndex={0}
             onContextMenu={(event) =>
-              openSpeakerMergePopover(event, turn.speaker, setMergePopover)
+              openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu)
             }
             onKeyDown={(event) => {
               if (
                 event.key === 'ContextMenu' ||
                 (event.shiftKey && event.key === 'F10')
               ) {
-                openSpeakerMergePopover(event, turn.speaker, setMergePopover);
+                openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu);
               }
             }}
           >
@@ -830,12 +854,13 @@ function DiarizationArtifactView({
           </li>
         ))}
       </ul>
-      {mergePopover !== null ? (
-        <SpeakerMergePopover
+      {speakerMenu !== null ? (
+        <SpeakerContextMenu
           speakers={speakers}
-          state={mergePopover}
+          state={speakerMenu}
+          onRename={handleRename}
           onMerge={handleMerge}
-          onClose={() => setMergePopover(null)}
+          onClose={() => setSpeakerMenu(null)}
         />
       ) : null}
     </div>
@@ -858,6 +883,7 @@ interface WordSyncArtifactTabProps {
     kind: MeetingArtifactKind,
     data: U,
   ) => Promise<void>;
+  onSpeakerNamesSaved: () => void;
   formatTimestamp: (seconds: number) => string;
 }
 
@@ -870,13 +896,14 @@ function WordSyncArtifactTab({
   revision,
   loadArtifact,
   saveArtifact,
+  onSpeakerNamesSaved,
   formatTimestamp,
 }: WordSyncArtifactTabProps) {
   const [words, setWords] = useState<TimestampedWord[] | null>(null);
   const [diarization, setDiarization] = useState<SpeakerTurn[] | null>(null);
   const [turns, setTurns] = useState<SpeakerWordTurn[] | null>(null);
-  const [mergePopover, setMergePopover] =
-    useState<SpeakerMergePopoverState | null>(null);
+  const [speakerMenu, setSpeakerMenu] =
+    useState<SpeakerContextMenuState | null>(null);
   const [wordAssignmentPopover, setWordAssignmentPopover] =
     useState<WordAssignmentPopoverState | null>(null);
   const [wordCount, setWordCount] = useState(0);
@@ -986,11 +1013,22 @@ function WordSyncArtifactTab({
         ) : null}
       </div>
       {diarization !== null && words !== null ? (
-        mergePopover !== null ? (
-          <SpeakerMergePopover
+        speakerMenu !== null ? (
+          <SpeakerContextMenu
             speakers={collectSpeakers(diarization)}
-            state={mergePopover}
-            onClose={() => setMergePopover(null)}
+            state={speakerMenu}
+            onClose={() => setSpeakerMenu(null)}
+            onRename={async (speaker, name) => {
+              await saveSpeakerNameArtifact(
+                meetingId,
+                speaker,
+                name,
+                loadArtifact,
+                saveArtifact,
+              );
+              onSpeakerNamesSaved();
+              setSpeakerMenu(null);
+            }}
             onMerge={async (sourceSpeaker, targetSpeaker) => {
               const mergedDiarization = mergeSpeakerTurns(
                 diarization,
@@ -1001,7 +1039,7 @@ function WordSyncArtifactTab({
               await saveArtifact(meetingId, 'diarization', mergedDiarization);
               setDiarization(mergedDiarization);
               setTurns(buildSpeakerWordTurns(words, mergedDiarization));
-              setMergePopover(null);
+              setSpeakerMenu(null);
             }}
           />
         ) : null
@@ -1038,14 +1076,14 @@ function WordSyncArtifactTab({
               className={styles.playbackSegment}
               tabIndex={0}
               onContextMenu={(event) =>
-                openSpeakerMergePopover(event, turn.speaker, setMergePopover)
+                openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu)
               }
               onKeyDown={(event) => {
                 if (
                   event.key === 'ContextMenu' ||
                   (event.shiftKey && event.key === 'F10')
                 ) {
-                  openSpeakerMergePopover(event, turn.speaker, setMergePopover);
+                  openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu);
                 }
               }}
             >
@@ -1283,22 +1321,26 @@ function SpeakerNamesTab({
   );
 }
 
-interface SpeakerMergePopoverProps {
+interface SpeakerContextMenuProps {
   speakers: string[];
-  state: SpeakerMergePopoverState;
+  state: SpeakerContextMenuState;
+  onRename: (speaker: string, name: string) => Promise<void>;
   onMerge: (sourceSpeaker: string, targetSpeaker: string) => Promise<void>;
   onClose: () => void;
 }
 
-function SpeakerMergePopover({
+function SpeakerContextMenu({
   speakers,
   state,
+  onRename,
   onMerge,
   onClose,
-}: SpeakerMergePopoverProps) {
+}: SpeakerContextMenuProps) {
   const mergeTargets = speakers.filter(
     (speaker) => speaker !== state.sourceSpeaker,
   );
+  const [mode, setMode] = useState<SpeakerContextMenuMode>('menu');
+  const [speakerName, setSpeakerName] = useState(state.sourceSpeaker);
   const [targetSpeaker, setTargetSpeaker] = useState(mergeTargets[0] ?? '');
   const [saving, setSaving] = useState(false);
 
@@ -1328,6 +1370,20 @@ function SpeakerMergePopover({
     };
   }, [onClose]);
 
+  async function handleRename(): Promise<void> {
+    const trimmed = speakerName.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onRename(state.sourceSpeaker, trimmed);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleMerge(): Promise<void> {
     if (targetSpeaker.length === 0) {
       return;
@@ -1341,58 +1397,114 @@ function SpeakerMergePopover({
     }
   }
 
-  if (mergeTargets.length === 0) {
-    return null;
-  }
-
   return (
     <div
       className={styles.speakerMergePopover}
       style={{ left: state.x, top: state.y }}
       onClick={(event) => event.stopPropagation()}
     >
-      <strong>Merge {state.sourceSpeaker}</strong>
-      <span>Into speaker</span>
-      <select
-        value={targetSpeaker}
-        onChange={(event) => setTargetSpeaker(event.target.value)}
-        disabled={saving}
-      >
-        {mergeTargets.map((speaker) => (
-          <option key={speaker} value={speaker}>
-            {speaker}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        onClick={() => void handleMerge()}
-        disabled={saving || targetSpeaker.length === 0}
-      >
-        {saving ? 'Merging...' : 'Merge'}
-      </button>
+      {mode === 'menu' ? (
+        <>
+          <strong>{state.sourceSpeaker}</strong>
+          <button type="button" onClick={() => setMode('rename')}>
+            <span aria-hidden="true">✎</span>
+            Rename
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('merge')}
+            disabled={mergeTargets.length === 0}
+          >
+            <span aria-hidden="true">⇄</span>
+            Merge
+          </button>
+        </>
+      ) : null}
+
+      {mode === 'rename' ? (
+        <>
+          <strong>Rename {state.sourceSpeaker}</strong>
+          <span>Assign speaker name</span>
+          <input
+            type="text"
+            value={speakerName}
+            onChange={(event) => setSpeakerName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                void handleRename();
+              }
+            }}
+            disabled={saving}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => void handleRename()}
+            disabled={saving || speakerName.trim().length === 0}
+          >
+            <span aria-hidden="true">✓</span>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
+            <span aria-hidden="true">←</span>
+            Back
+          </button>
+        </>
+      ) : null}
+
+      {mode === 'merge' ? (
+        <>
+          <strong>Merge {state.sourceSpeaker}</strong>
+          <span>Into speaker</span>
+          <select
+            value={targetSpeaker}
+            onChange={(event) => setTargetSpeaker(event.target.value)}
+            disabled={saving}
+          >
+            {mergeTargets.map((speaker) => (
+              <option key={speaker} value={speaker}>
+                {speaker}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void handleMerge()}
+            disabled={saving || targetSpeaker.length === 0}
+          >
+            <span aria-hidden="true">⇄</span>
+            {saving ? 'Merging...' : 'Merge'}
+          </button>
+          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
+            <span aria-hidden="true">←</span>
+            Back
+          </button>
+        </>
+      ) : null}
+
       <button type="button" onClick={onClose} disabled={saving}>
+        <span aria-hidden="true">×</span>
         Cancel
       </button>
     </div>
   );
 }
 
-function openSpeakerMergePopover(
+function openSpeakerContextMenu(
   event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>,
   sourceSpeaker: string,
-  setMergePopover: Dispatch<SetStateAction<SpeakerMergePopoverState | null>>,
+  setSpeakerMenu: Dispatch<SetStateAction<SpeakerContextMenuState | null>>,
 ): void {
   event.preventDefault();
   event.stopPropagation();
 
   if ('clientX' in event && event.clientX !== 0 && event.clientY !== 0) {
-    setMergePopover({ sourceSpeaker, x: event.clientX, y: event.clientY });
+    setSpeakerMenu({ sourceSpeaker, x: event.clientX, y: event.clientY });
     return;
   }
 
   const rect = event.currentTarget.getBoundingClientRect();
-  setMergePopover({
+  setSpeakerMenu({
     sourceSpeaker,
     x: rect.left + 16,
     y: rect.top + 16,
@@ -1495,6 +1607,31 @@ function openWordAssignmentPopover(
 
 function collectSpeakers(turns: SpeakerTurn[]): string[] {
   return [...new Set(turns.map((turn) => turn.speaker))].sort();
+}
+
+async function saveSpeakerNameArtifact(
+  meetingId: string,
+  speaker: string,
+  name: string,
+  loadArtifact: <U>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ) => Promise<U | null>,
+  saveArtifact: <U>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+    data: U,
+  ) => Promise<void>,
+): Promise<void> {
+  const savedNames = await loadArtifact<Record<string, string>>(
+    meetingId,
+    'speaker-names',
+  );
+
+  await saveArtifact(meetingId, 'speaker-names', {
+    ...(savedNames ?? {}),
+    [speaker]: name,
+  });
 }
 
 function mergeSpeakerTurns(
