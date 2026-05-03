@@ -593,12 +593,7 @@ export class Engine {
     for (const turn of sortedTurns) {
       const previousTurn = mergedTurns.at(-1);
 
-      if (
-        previousTurn !== undefined &&
-        previousTurn.speaker === turn.speaker &&
-        turn.startSeconds - previousTurn.endSeconds <=
-          DIARIZATION_OVERLAP_SECONDS
-      ) {
+      if (previousTurn !== undefined && previousTurn.speaker === turn.speaker) {
         previousTurn.endSeconds = Math.max(
           previousTurn.endSeconds,
           turn.endSeconds,

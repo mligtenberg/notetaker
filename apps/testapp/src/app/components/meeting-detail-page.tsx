@@ -40,6 +40,12 @@ interface SpeakerMergePopoverState {
   y: number;
 }
 
+interface LiveTranscriptSegment {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
 interface WordAssignmentPopoverState {
   turnIndex: number;
   wordIndex: number;
@@ -81,6 +87,8 @@ interface MeetingDetailPageProps {
   status: RecorderStatus;
   engineStatus: EngineStatus;
   engineMessage: string;
+  artifactRevision: number;
+  liveTranscriptSegments: LiveTranscriptSegment[];
   loadArtifact: <T>(
     meetingId: string,
     kind: MeetingArtifactKind,
@@ -103,6 +111,7 @@ interface MeetingDetailPageProps {
   onRunDiarization: () => void;
   onRunWordSync: () => void;
   onRunSpeakerNaming: () => void;
+  onOpenLogging: (mode: 'engine' | 'transcription') => void;
   onBack: () => void;
   formatBytes: (size: number) => string;
   formatDate: (timestamp: number) => string;
@@ -116,6 +125,8 @@ export function MeetingDetailPage({
   status,
   engineStatus,
   engineMessage,
+  artifactRevision,
+  liveTranscriptSegments,
   loadArtifact,
   saveArtifact,
   onUpdateMeeting,
@@ -128,6 +139,7 @@ export function MeetingDetailPage({
   onRunDiarization,
   onRunWordSync,
   onRunSpeakerNaming,
+  onOpenLogging,
   onBack,
   formatBytes,
   formatDate,
@@ -137,12 +149,19 @@ export function MeetingDetailPage({
   const [speakerNamesSaved, setSpeakerNamesSaved] = useState(
     meeting.artifacts['speaker-names'],
   );
+  const [loggingAvailableTab, setLoggingAvailableTab] = useState<TabKey | null>(
+    null,
+  );
   const diarizationAudioRef = useRef<HTMLAudioElement | null>(null);
   const wordSyncAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     setSpeakerNamesSaved(meeting.artifacts['speaker-names']);
   }, [meeting.id, meeting.artifacts]);
+
+  useEffect(() => {
+    setLoggingAvailableTab(null);
+  }, [meeting.id]);
 
   const hasRecording = meeting.recordingFileName !== null;
   const hasTranscript = meeting.artifacts.transcript;
@@ -166,7 +185,10 @@ export function MeetingDetailPage({
             type="button"
             data-active={activeTab === tab}
             data-status={getTabStatus(tab, meeting, speakerNamesSaved)}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => {
+              setActiveTab(tab);
+              setLoggingAvailableTab(null);
+            }}
           >
             <span>{TAB_LABELS[tab]}</span>
           </button>
@@ -206,35 +228,36 @@ export function MeetingDetailPage({
             disabled={!hasRecording || processing}
             disabledReason={hasRecording ? null : 'Add a recording first.'}
             engineMessage={engineMessage}
-            onRun={onRunTranscript}
+            onRun={() => {
+              setLoggingAvailableTab('transcript');
+              onRunTranscript();
+            }}
+            onOpenLogging={() => onOpenLogging('transcription')}
+            showLogging={loggingAvailableTab === 'transcript'}
           />
-          <ArtifactTab<Transcript>
-            meetingId={meeting.id}
-            kind="transcript"
-            present={meeting.artifacts.transcript}
-            loadArtifact={loadArtifact}
-            render={(transcript) => (
-              <div className={styles.transcriptResult}>
-                <div className={styles.resultHeader}>
-                  <h3>Transcript</h3>
-                  <ExportControls
-                    json={transcript}
-                    jsonFileName={`${meeting.name}-transcript.json`}
-                    text={transcript.text}
-                    textFileName={`${meeting.name}-transcript.txt`}
-                  />
-                </div>
-                <ul>
-                  {transcript.segments.map((segment, index) => (
-                    <li key={`${segment.startSeconds}-${index}`}>
-                      <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
-                      <span>{segment.text}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          />
+          {processing && liveTranscriptSegments.length > 0 ? (
+            <LiveTranscriptPreview
+              segments={liveTranscriptSegments}
+              formatTimestamp={formatTimestamp}
+            />
+          ) : processing ? (
+            <p className={styles.empty}>Waiting for speech...</p>
+          ) : (
+            <ArtifactTab<Transcript>
+              meetingId={meeting.id}
+              kind="transcript"
+              present={meeting.artifacts.transcript}
+              revision={artifactRevision}
+              loadArtifact={loadArtifact}
+              render={(transcript) => (
+                <TranscriptArtifactView
+                  meetingName={meeting.name}
+                  transcript={transcript}
+                  formatTimestamp={formatTimestamp}
+                />
+              )}
+            />
+          )}
         </>
       ) : null}
 
@@ -246,12 +269,18 @@ export function MeetingDetailPage({
             disabled={!hasRecording || processing}
             disabledReason={hasRecording ? null : 'Add a recording first.'}
             engineMessage={engineMessage}
-            onRun={onRunDiarization}
+            onRun={() => {
+              setLoggingAvailableTab('diarization');
+              onRunDiarization();
+            }}
+            onOpenLogging={() => onOpenLogging('engine')}
+            showLogging={loggingAvailableTab === 'diarization'}
           />
           <ArtifactTab<SpeakerTurn[]>
             meetingId={meeting.id}
             kind="diarization"
             present={meeting.artifacts.diarization}
+            revision={artifactRevision}
             loadArtifact={loadArtifact}
             render={(turns, setTurns) => (
               <DiarizationArtifactView
@@ -285,7 +314,12 @@ export function MeetingDetailPage({
                     : null
             }
             engineMessage={engineMessage}
-            onRun={onRunWordSync}
+            onRun={() => {
+              setLoggingAvailableTab('word-sync');
+              onRunWordSync();
+            }}
+            onOpenLogging={() => onOpenLogging('engine')}
+            showLogging={loggingAvailableTab === 'word-sync'}
           />
           <WordSyncArtifactTab
             meetingId={meeting.id}
@@ -293,6 +327,7 @@ export function MeetingDetailPage({
             meetingUrl={meetingUrl}
             audioRef={wordSyncAudioRef}
             present={meeting.artifacts['word-sync']}
+            revision={artifactRevision}
             loadArtifact={loadArtifact}
             saveArtifact={saveArtifact}
             formatTimestamp={formatTimestamp}
@@ -312,12 +347,18 @@ export function MeetingDetailPage({
                 : 'Generate word sync first for automatic lookup.'
             }
             engineMessage={engineMessage}
-            onRun={onRunSpeakerNaming}
+            onRun={() => {
+              setLoggingAvailableTab('speaker-names');
+              onRunSpeakerNaming();
+            }}
+            onOpenLogging={() => onOpenLogging('engine')}
+            showLogging={loggingAvailableTab === 'speaker-names'}
           />
           <SpeakerNamesTab
             meetingId={meeting.id}
             meetingName={meeting.name}
             present={meeting.artifacts.diarization}
+            revision={artifactRevision}
             loadArtifact={loadArtifact}
             saveArtifact={saveArtifact}
             onSaved={() => setSpeakerNamesSaved(true)}
@@ -355,6 +396,8 @@ interface ArtifactToolbarProps {
   disabledReason: string | null;
   engineMessage: string;
   onRun: () => void;
+  onOpenLogging: () => void;
+  showLogging: boolean;
 }
 
 function ArtifactToolbar({
@@ -364,6 +407,8 @@ function ArtifactToolbar({
   disabledReason,
   engineMessage,
   onRun,
+  onOpenLogging,
+  showLogging,
 }: ArtifactToolbarProps) {
   return (
     <div className={styles.artifactToolbar}>
@@ -375,6 +420,15 @@ function ArtifactToolbar({
           <small>{disabledReason}</small>
         ) : engineMessage.length > 0 && running ? (
           <small>{engineMessage}</small>
+        ) : null}
+        {showLogging ? (
+          <button
+            type="button"
+            className={styles.textButton}
+            onClick={onOpenLogging}
+          >
+            Open logging
+          </button>
         ) : null}
       </div>
     </div>
@@ -607,6 +661,69 @@ function RecordingPlayback({ audioRef, meetingUrl }: RecordingPlaybackProps) {
   );
 }
 
+interface TranscriptArtifactViewProps {
+  meetingName: string;
+  transcript: Transcript;
+  formatTimestamp: (seconds: number) => string;
+}
+
+function TranscriptArtifactView({
+  meetingName,
+  transcript,
+  formatTimestamp,
+}: TranscriptArtifactViewProps) {
+  return (
+    <div className={styles.transcriptResult}>
+      <div className={styles.resultHeader}>
+        <h3>Transcript</h3>
+        <ExportControls
+          json={transcript}
+          jsonFileName={`${meetingName}-transcript.json`}
+          text={transcript.text}
+          textFileName={`${meetingName}-transcript.txt`}
+        />
+      </div>
+      <ul>
+        {transcript.segments.map((segment, index) => (
+          <li key={`${segment.startSeconds}-${index}`}>
+            <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
+            <span>{segment.text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+interface LiveTranscriptPreviewProps {
+  segments: LiveTranscriptSegment[];
+  formatTimestamp: (seconds: number) => string;
+}
+
+function LiveTranscriptPreview({
+  segments,
+  formatTimestamp,
+}: LiveTranscriptPreviewProps) {
+  return (
+    <div className={styles.transcriptResult}>
+      <div className={styles.resultHeader}>
+        <h3>Live transcript</h3>
+        <span>
+          {segments.length} segment{segments.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <ul>
+        {segments.map((segment, index) => (
+          <li key={`${segment.startSeconds}-${index}`}>
+            <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
+            <span>{segment.text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 async function playRecordingFrom(
   audioRef: RefObject<HTMLAudioElement | null>,
   startSeconds: number,
@@ -731,6 +848,7 @@ interface WordSyncArtifactTabProps {
   meetingUrl: string | undefined;
   audioRef: RefObject<HTMLAudioElement | null>;
   present: boolean;
+  revision: number;
   loadArtifact: <U>(
     meetingId: string,
     kind: MeetingArtifactKind,
@@ -749,6 +867,7 @@ function WordSyncArtifactTab({
   meetingUrl,
   audioRef,
   present,
+  revision,
   loadArtifact,
   saveArtifact,
   formatTimestamp,
@@ -808,7 +927,7 @@ function WordSyncArtifactTab({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, present, loadArtifact]);
+  }, [meetingId, present, revision, loadArtifact]);
 
   if (!present) {
     return (
@@ -1021,6 +1140,7 @@ interface SpeakerNamesTabProps {
   meetingId: string;
   meetingName: string;
   present: boolean;
+  revision: number;
   loadArtifact: <U>(
     meetingId: string,
     kind: MeetingArtifactKind,
@@ -1037,6 +1157,7 @@ function SpeakerNamesTab({
   meetingId,
   meetingName,
   present,
+  revision,
   loadArtifact,
   saveArtifact,
   onSaved,
@@ -1094,7 +1215,7 @@ function SpeakerNamesTab({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, present, loadArtifact]);
+  }, [meetingId, present, revision, loadArtifact]);
 
   async function saveNames(nextNames: Record<string, string>): Promise<void> {
     setNames(nextNames);
@@ -1402,11 +1523,7 @@ function mergeAdjacentSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
 
     const previousTurn = mergedTurns.at(-1);
 
-    if (
-      previousTurn !== undefined &&
-      previousTurn.speaker === turn.speaker &&
-      turn.startSeconds <= previousTurn.endSeconds
-    ) {
+    if (previousTurn !== undefined && previousTurn.speaker === turn.speaker) {
       previousTurn.endSeconds = Math.max(
         previousTurn.endSeconds,
         turn.endSeconds,
@@ -1619,6 +1736,7 @@ interface ArtifactTabProps<T> {
   meetingId: string;
   kind: MeetingArtifactKind;
   present: boolean;
+  revision: number;
   loadArtifact: <U>(
     meetingId: string,
     kind: MeetingArtifactKind,
@@ -1633,6 +1751,7 @@ function ArtifactTab<T>({
   meetingId,
   kind,
   present,
+  revision,
   loadArtifact,
   render,
 }: ArtifactTabProps<T>) {
@@ -1669,7 +1788,7 @@ function ArtifactTab<T>({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, kind, present, loadArtifact]);
+  }, [meetingId, kind, present, revision, loadArtifact]);
 
   if (!present) {
     return (

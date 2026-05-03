@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { AudioRecorder } from '@notetaker/audio-recorder';
 import {
-  type EngineProgressEvent,
-  type EngineStage,
-  type MeetingNotes,
   type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
@@ -24,12 +21,9 @@ import type {
   EngineWorkerRequest,
   EngineWorkerResponse,
 } from './engine.worker';
-import { DiarizationPage } from './components/diarization-page';
-import { EnginePage } from './components/engine-page';
 import { MeetingDetailPage } from './components/meeting-detail-page';
 import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
-import { TranscriptionPage } from './components/transcription-page';
 import styles from './app.module.css';
 
 interface LiveTranscriptSegment {
@@ -40,31 +34,17 @@ interface LiveTranscriptSegment {
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
-type AppPage =
-  | 'models'
-  | 'meetings'
-  | 'transcription'
-  | 'diarization'
-  | 'engine';
+type AppPage = 'models' | 'meetings';
 
 const PAGE_PATHS: Record<AppPage, string> = {
   models: '/models',
   meetings: '/meetings',
-  transcription: '/transcription',
-  diarization: '/diarization',
-  engine: '/engine',
 };
 
 function resolveActivePage(pathname: string): AppPage {
   const segment = pathname.split('/')[1] ?? '';
 
-  if (
-    segment === 'models' ||
-    segment === 'meetings' ||
-    segment === 'transcription' ||
-    segment === 'diarization' ||
-    segment === 'engine'
-  ) {
+  if (segment === 'models' || segment === 'meetings') {
     return segment;
   }
 
@@ -671,18 +651,6 @@ function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function collectSpeakerNames(notes: MeetingNotes): Record<string, string> {
-  const map: Record<string, string> = {};
-
-  for (const segment of notes.transcript.segments) {
-    if (segment.speaker.length > 0 && map[segment.speaker] === undefined) {
-      map[segment.speaker] = segment.speakerName;
-    }
-  }
-
-  return map;
-}
-
 async function detectWebGpuSupport(): Promise<boolean> {
   const gpu = (navigator as NavigatorWithWebGpu).gpu;
 
@@ -695,14 +663,6 @@ async function detectWebGpuSupport(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function getWebGpuSupportLabel(support: WebGpuSupport): string {
-  if (support === 'checking') {
-    return 'Checking WebGPU...';
-  }
-
-  return support === 'supported' ? 'WebGPU available' : 'WASM fallback';
 }
 
 function getWhisperRuntimeLabel(version: ModelVersionManifestEntry): string {
@@ -730,6 +690,7 @@ export function App() {
     'Select a meeting and run the engine.',
   );
   const [meetings, setMeetings] = useState<StoredMeetingSummary[]>([]);
+  const [artifactRevision, setArtifactRevision] = useState(0);
   const [meetingUrls, setMeetingUrls] = useState<Record<string, string>>({});
   const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [modelVersions, setModelVersions] = useState<
@@ -742,13 +703,6 @@ export function App() {
   const [recordingMeetingId, setRecordingMeetingId] = useState<string | null>(
     null,
   );
-  const [meetingNotes, setMeetingNotes] = useState<MeetingNotes | null>(null);
-  const [transcriptionResult, setTranscriptionResult] =
-    useState<Transcript | null>(null);
-  const [diarizationResult, setDiarizationResult] = useState<
-    SpeakerTurn[] | null
-  >(null);
-  const [numSpeakersHint, setNumSpeakersHint] = useState<number | null>(null);
   const [engineDialogOpen, setEngineDialogOpen] = useState(false);
   const [engineDialogMode, setEngineDialogMode] = useState<
     'engine' | 'transcription'
@@ -757,17 +711,11 @@ export function App() {
   const [liveTranscriptSegments, setLiveTranscriptSegments] = useState<
     LiveTranscriptSegment[]
   >([]);
-  const [engineBarValue, setEngineBarValue] = useState<number | null>(null);
+  const [liveTranscriptMeetingId, setLiveTranscriptMeetingId] = useState<
+    string | null
+  >(null);
   const [webGpuSupport, setWebGpuSupport] = useState<WebGpuSupport>('checking');
   const engineLogRef = useRef<HTMLDivElement | null>(null);
-  const [engineProgress, setEngineProgress] = useState<
-    Record<EngineStage, EngineProgressEvent['status'] | undefined>
-  >({
-    transcription: undefined,
-    diarization: undefined,
-    'word-sync': undefined,
-    'speaker-naming': undefined,
-  });
   const location = useLocation();
   const navigate = useNavigate();
   const activePage = resolveActivePage(location.pathname);
@@ -849,18 +797,6 @@ export function App() {
     }
   }
 
-  const meetingOptions = useMemo(
-    () =>
-      meetings
-        .filter((meeting) => meeting.recordingFileName !== null)
-        .map((meeting) => ({
-          id: meeting.id,
-          name: meeting.name,
-          date: meeting.date,
-        })),
-    [meetings],
-  );
-
   async function refreshModelVersions(modelManager = modelManagerRef.current) {
     if (modelManager === null) {
       return;
@@ -887,6 +823,7 @@ export function App() {
     }
 
     await refreshMeetings(repo);
+    setArtifactRevision((current) => current + 1);
   }
 
   function getKnownDownloadSize(download: DirectModelDownload): number {
@@ -1223,9 +1160,6 @@ export function App() {
 
       if (selectedMeetingId === meeting.id) {
         setSelectedMeetingId('');
-        setMeetingNotes(null);
-        setTranscriptionResult(null);
-        setDiarizationResult(null);
         setEngineMessage('Select a meeting and run the engine.');
       }
 
@@ -1436,7 +1370,6 @@ export function App() {
   function handleWorkerUpdate(msg: EngineWorkerResponse): boolean {
     if (msg.type === 'progress') {
       const { stage, status } = msg.event;
-      setEngineProgress((current) => ({ ...current, [stage]: status }));
       appendEngineLog(`[${stage}] ${status}`);
       return true;
     }
@@ -1447,7 +1380,6 @@ export function App() {
     }
 
     if (msg.type === 'bar') {
-      setEngineBarValue(msg.value);
       return true;
     }
 
@@ -1457,156 +1389,6 @@ export function App() {
     }
 
     return false;
-  }
-
-  async function handleRunEngine() {
-    const repo = meetingsRepoRef.current;
-    const selectedMeeting = meetings.find(
-      (meeting) => meeting.id === selectedMeetingId,
-    );
-    const missingModel = MODEL_DOWNLOAD_TARGETS.find(
-      (target) => getActiveModelVersion(target.model) === undefined,
-    );
-
-    if (repo === null || selectedMeeting === undefined) {
-      setEngineMessage('Select a stored meeting first.');
-      return;
-    }
-
-    if (missingModel !== undefined) {
-      setEngineMessage(`Download a ${missingModel.label} model first.`);
-      return;
-    }
-
-    setEngineStatus('processing');
-    setEngineMessage(`Processing ${selectedMeeting.name}...`);
-    setEngineDialogMode('engine');
-    setEngineDialogOpen(true);
-    setEngineLog([`Starting engine for ${selectedMeeting.name}.`]);
-    setLiveTranscriptSegments([]);
-    setEngineBarValue(null);
-    setEngineProgress({
-      transcription: undefined,
-      diarization: undefined,
-      'word-sync': undefined,
-      'speaker-naming': undefined,
-    });
-
-    try {
-      const audioFile = await repo.loadRecording(selectedMeeting.id);
-      const activeWhisper = getActiveModelVersion('whisper');
-      const activePyannote = getActiveModelVersion('pyannote');
-      const activeGemma4 = getActiveModelVersion('gemma4');
-
-      if (
-        activeWhisper === undefined ||
-        activePyannote === undefined ||
-        activeGemma4 === undefined
-      ) {
-        throw new Error('Download and activate all required models first.');
-      }
-
-      setEngineMessage(`Decoding ${selectedMeeting.name}...`);
-      setEngineLog((current) => [
-        ...current,
-        `Decoding ${selectedMeeting.name} (${formatBytes(audioFile.size)})...`,
-      ]);
-      const samples = await decodeAudioBlobToMonoFloat32(
-        audioFile,
-        WHISPER_SAMPLE_RATE,
-        appendEngineLog,
-      );
-      if (samples.length === 0) {
-        throw new Error('Decoded audio produced no samples.');
-      }
-      const sampleCount = samples.length;
-      const sampleDurationSeconds = sampleCount / WHISPER_SAMPLE_RATE;
-      setEngineLog((current) => [
-        ...current,
-        `Decoded ${sampleDurationSeconds.toFixed(3)}s of audio (${sampleCount} samples).`,
-        `Runtime: ${getWhisperRuntimeLabel(activeWhisper)}`,
-        `Using Whisper ${getModelVersionTitle(activeWhisper)}.`,
-        `Using Pyannote ${getModelVersionTitle(activePyannote)}.`,
-        `Using Gemma 4 ${getModelVersionTitle(activeGemma4)}.`,
-      ]);
-      setEngineMessage(`Processing ${selectedMeeting.name}...`);
-      const worker = getEngineWorker();
-      const requestId = ++engineRequestIdRef.current;
-
-      const notes = await new Promise<MeetingNotes>((resolve, reject) => {
-        const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
-          const msg = event.data;
-
-          if (msg.id !== requestId) {
-            return;
-          }
-
-          if (handleWorkerUpdate(msg)) {
-            return;
-          }
-
-          if (msg.type !== 'result') {
-            return;
-          }
-
-          worker.removeEventListener('message', handleMessage);
-
-          if (msg.ok) {
-            if (msg.mode !== 'engine') {
-              reject(
-                new Error(
-                  'Worker returned an unexpected transcription result.',
-                ),
-              );
-              return;
-            }
-
-            setLiveTranscriptSegments(msg.notes.transcript.segments);
-            resolve(msg.notes);
-          } else {
-            reject(new Error(msg.error));
-          }
-        };
-
-        worker.addEventListener('message', handleMessage);
-        const request: EngineWorkerRequest = {
-          id: requestId,
-          fileName: selectedMeeting.name,
-          audio: samples,
-          useWebGpu: webGpuSupport === 'supported',
-          numSpeakers: numSpeakersHint,
-        };
-        appendEngineLog(
-          `[worker] posting engine request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,
-        );
-        worker.postMessage(request, [samples.buffer]);
-        appendEngineLog(`[worker] posted engine request ${requestId}.`);
-      });
-
-      await repo.saveArtifact(
-        selectedMeeting.id,
-        'transcript',
-        notes.transcript,
-      );
-      const speakerNames = collectSpeakerNames(notes);
-      if (Object.keys(speakerNames).length > 0) {
-        await repo.saveArtifact(
-          selectedMeeting.id,
-          'speaker-names',
-          speakerNames,
-        );
-      }
-      await refreshMeetings(repo);
-
-      setMeetingNotes(notes);
-      setEngineStatus('idle');
-      setEngineMessage(`Engine completed for ${selectedMeeting.name}.`);
-    } catch (error) {
-      setEngineStatus('error');
-      setEngineMessage(
-        error instanceof Error ? error.message : 'Engine processing failed.',
-      );
-    }
   }
 
   async function handleRunTranscription(meetingId: string = selectedMeetingId) {
@@ -1631,15 +1413,8 @@ export function App() {
     setEngineLog([
       `Starting transcription-only run for ${selectedMeeting.name}.`,
     ]);
+    setLiveTranscriptMeetingId(selectedMeeting.id);
     setLiveTranscriptSegments([]);
-    setEngineBarValue(null);
-    setEngineProgress({
-      transcription: undefined,
-      diarization: undefined,
-      'word-sync': undefined,
-      'speaker-naming': undefined,
-    });
-    setTranscriptionResult(null);
 
     try {
       const audioFile = await repo.loadRecording(selectedMeeting.id);
@@ -1718,11 +1493,13 @@ export function App() {
       await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
       await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
 
-      setTranscriptionResult(transcript);
+      setLiveTranscriptMeetingId(null);
       setEngineStatus('idle');
       setEngineMessage(`Transcription completed for ${selectedMeeting.name}.`);
     } catch (error) {
+      setLiveTranscriptMeetingId(null);
       setEngineStatus('error');
       setEngineMessage(
         error instanceof Error ? error.message : 'Transcription failed.',
@@ -1749,16 +1526,9 @@ export function App() {
     }
 
     setEngineStatus('processing');
+    setLiveTranscriptMeetingId(null);
     setEngineMessage(`Diarizing ${selectedMeeting.name}...`);
     setEngineLog([`Starting diarization of ${selectedMeeting.name}.`]);
-    setEngineBarValue(null);
-    setEngineProgress({
-      transcription: undefined,
-      diarization: undefined,
-      'word-sync': undefined,
-      'speaker-naming': undefined,
-    });
-    setDiarizationResult(null);
 
     try {
       const audioFile = await repo.loadRecording(selectedMeeting.id);
@@ -1779,6 +1549,7 @@ export function App() {
       setEngineLog((current) => [
         ...current,
         `Decoded ${sampleDurationSeconds.toFixed(3)}s of audio (${sampleCount} samples).`,
+        `Speaker hint: ${selectedMeeting.participantCount} meeting participants.`,
         `Using Pyannote ${getModelVersionTitle(activePyannote)}.`,
       ]);
 
@@ -1826,7 +1597,7 @@ export function App() {
           fileName: selectedMeeting.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
-          numSpeakers: numSpeakersHint,
+          numSpeakers: selectedMeeting.participantCount,
         };
         appendEngineLog(
           `[worker] posting diarization request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,
@@ -1839,8 +1610,8 @@ export function App() {
       await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
       await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
 
-      setDiarizationResult(turns);
       setEngineStatus('idle');
       setEngineMessage(
         `Diarization completed: ${turns.length} speaker turn${turns.length === 1 ? '' : 's'} detected.`,
@@ -1873,9 +1644,9 @@ export function App() {
     }
 
     setEngineStatus('processing');
+    setLiveTranscriptMeetingId(null);
     setEngineMessage(`Aligning words for ${meeting.name}...`);
     setEngineLog([`Starting word-sync for ${meeting.name}.`]);
-    setEngineBarValue(null);
 
     try {
       const transcript = await repo.loadArtifact<Transcript>(
@@ -1930,6 +1701,7 @@ export function App() {
       await repo.saveArtifact(meetingId, 'word-sync', words);
       await repo.deleteArtifact(meetingId, 'speaker-names');
       await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
       setEngineStatus('idle');
       setEngineMessage(
         `Word sync completed for ${meeting.name} (${words.length} words).`,
@@ -1962,9 +1734,9 @@ export function App() {
     }
 
     setEngineStatus('processing');
+    setLiveTranscriptMeetingId(null);
     setEngineMessage(`Naming speakers for ${meeting.name}...`);
     setEngineLog([`Starting speaker naming for ${meeting.name}.`]);
-    setEngineBarValue(null);
 
     try {
       const transcript = await repo.loadArtifact<Transcript>(
@@ -2024,6 +1796,7 @@ export function App() {
 
       await repo.saveArtifact(meetingId, 'speaker-names', names);
       await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
       setEngineStatus('idle');
       setEngineMessage(`Speaker naming completed for ${meeting.name}.`);
     } catch (error) {
@@ -2066,9 +1839,6 @@ export function App() {
             [
               ['models', 'Models', `${activeModelCount}/4 active`],
               ['meetings', 'Meetings', `${meetings.length} saved`],
-              ['transcription', 'Transcription', engineStatus],
-              ['diarization', 'Diarization', engineStatus],
-              ['engine', 'Engine', engineStatus],
             ] as const
           ).map(([page, label, detail]) => (
             <NavLink
@@ -2088,24 +1858,12 @@ export function App() {
           <h1>
             {activePage === 'models'
               ? 'Models'
-              : activePage === 'meetings'
-                ? 'Meetings'
-                : activePage === 'transcription'
-                  ? 'Transcription'
-                  : activePage === 'diarization'
-                    ? 'Diarization'
-                    : 'Engine'}
+              : 'Meetings'}
           </h1>
           <p>
             {activePage === 'models'
               ? 'Download and activate the local Whisper, Pyannote, and Gemma models.'
-              : activePage === 'meetings'
-                ? 'Capture, transcribe, and review meetings stored locally in OPFS.'
-                : activePage === 'transcription'
-                  ? 'Run Whisper transcription on a saved meeting.'
-                  : activePage === 'diarization'
-                    ? 'Run Pyannote speaker diarization on a saved meeting.'
-                    : 'Run the full transcription, diarization, and speaker-naming pipeline.'}
+              : 'Capture, transcribe, and review meetings stored locally in OPFS.'}
           </p>
         </header>
 
@@ -2202,6 +1960,13 @@ export function App() {
                   status={status}
                   engineStatus={engineStatus}
                   engineMessage={engineMessage}
+                  artifactRevision={artifactRevision}
+                  liveTranscriptSegments={
+                    engineStatus === 'processing' &&
+                    liveTranscriptMeetingId === viewedMeeting.id
+                      ? liveTranscriptSegments
+                      : []
+                  }
                   loadArtifact={loadMeetingArtifact}
                   saveArtifact={saveMeetingArtifact}
                   onUpdateMeeting={(id, patch) =>
@@ -2228,6 +1993,10 @@ export function App() {
                   onRunSpeakerNaming={() =>
                     void handleRunSpeakerNaming(viewedMeeting.id)
                   }
+                  onOpenLogging={(mode) => {
+                    setEngineDialogMode(mode);
+                    setEngineDialogOpen(true);
+                  }}
                   onBack={() => navigate('/meetings')}
                   formatBytes={formatBytes}
                   formatDate={formatDate}
@@ -2248,69 +2017,6 @@ export function App() {
           />
         ) : null}
 
-        {activePage === 'transcription' ? (
-          <TranscriptionPage
-            engineStatus={engineStatus}
-            engineMessage={engineMessage}
-            webGpuSupport={webGpuSupport}
-            engineProgress={engineProgress}
-            selectedMeetingId={selectedMeetingId}
-            meetings={meetingOptions}
-            transcriptionResult={transcriptionResult}
-            engineLog={engineLog}
-            engineBarValue={engineBarValue}
-            liveTranscriptSegments={liveTranscriptSegments}
-            activeWhisper={getActiveModelVersion('whisper')}
-            onSelectedMeetingIdChange={setSelectedMeetingId}
-            onRunTranscription={() => void handleRunTranscription()}
-            getWebGpuSupportLabel={getWebGpuSupportLabel}
-            getModelVersionTitle={getModelVersionTitle}
-          />
-        ) : null}
-
-        {activePage === 'diarization' ? (
-          <DiarizationPage
-            engineStatus={engineStatus}
-            engineMessage={engineMessage}
-            engineProgress={engineProgress}
-            engineBarValue={engineBarValue}
-            selectedMeetingId={selectedMeetingId}
-            meetings={meetingOptions}
-            numSpeakersHint={numSpeakersHint}
-            diarizationResult={diarizationResult}
-            engineLog={engineLog}
-            engineLogRef={engineLogRef}
-            activePyannote={getActiveModelVersion('pyannote')}
-            onSelectedMeetingIdChange={setSelectedMeetingId}
-            onNumSpeakersHintChange={setNumSpeakersHint}
-            onRunDiarization={() => void handleRunDiarization()}
-            getModelVersionTitle={getModelVersionTitle}
-            formatTimestamp={formatTimestamp}
-          />
-        ) : null}
-
-        {activePage === 'engine' ? (
-          <EnginePage
-            engineStatus={engineStatus}
-            engineMessage={engineMessage}
-            webGpuSupport={webGpuSupport}
-            engineProgress={engineProgress}
-            selectedMeetingId={selectedMeetingId}
-            meetings={meetingOptions}
-            meetingNotes={meetingNotes}
-            engineLog={engineLog}
-            engineBarValue={engineBarValue}
-            liveTranscriptSegments={liveTranscriptSegments}
-            numSpeakersHint={numSpeakersHint}
-            modelTargets={MODEL_DOWNLOAD_TARGETS}
-            onSelectedMeetingIdChange={setSelectedMeetingId}
-            onNumSpeakersHintChange={setNumSpeakersHint}
-            onRunEngine={() => void handleRunEngine()}
-            getWebGpuSupportLabel={getWebGpuSupportLabel}
-            getActiveModelVersion={getActiveModelVersion}
-            getModelVersionTitle={getModelVersionTitle}
-          />
-        ) : null}
       </section>
 
       {engineDialogOpen ? (
@@ -2338,57 +2044,25 @@ export function App() {
               <span data-state={engineStatus}>{engineStatus}</span>
             </div>
 
-            <ul className={styles.engineProgress}>
-              {(
-                [
-                  ['transcription', 'Transcription'],
-                  ['diarization', 'Diarization'],
-                  ['speaker-naming', 'Speaker naming'],
-                ] as const
-              ).map(([stage, label]) =>
-                engineDialogMode === 'transcription' &&
-                stage !== 'transcription' ? null : (
-                  <li
-                    key={stage}
-                    data-status={engineProgress[stage] ?? 'pending'}
-                  >
-                    <span>{label}</span>
-                    <small>{engineProgress[stage] ?? 'pending'}</small>
-                  </li>
-                ),
-              )}
-            </ul>
-
-            <div className={styles.progressTrack} aria-hidden="true">
-              <div
-                data-indeterminate={
-                  engineBarValue === null && engineStatus === 'processing'
-                }
-                style={
-                  engineBarValue !== null
-                    ? { width: `${engineBarValue}%` }
-                    : undefined
-                }
-              />
-            </div>
-
-            <div className={styles.liveTranscript}>
-              <div className={styles.liveTranscriptHeader}>
-                <strong>Live transcript</strong>
-                <span>{liveTranscriptSegments.length} segments</span>
-              </div>
-              {liveTranscriptSegments.length === 0 ? (
-                <p className={styles.empty}>Waiting for speech...</p>
-              ) : (
-                <div className={styles.liveTranscriptBody}>
-                  {liveTranscriptSegments.map((segment, index) => (
-                    <p key={`${segment.startSeconds}-${index}`}>
-                      <span>{segment.text}</span>
-                    </p>
-                  ))}
+            {engineDialogMode === 'transcription' ? (
+              <div className={styles.liveTranscript}>
+                <div className={styles.liveTranscriptHeader}>
+                  <strong>Live transcript</strong>
+                  <span>{liveTranscriptSegments.length} segments</span>
                 </div>
-              )}
-            </div>
+                {liveTranscriptSegments.length === 0 ? (
+                  <p className={styles.empty}>Waiting for speech...</p>
+                ) : (
+                  <div className={styles.liveTranscriptBody}>
+                    {liveTranscriptSegments.map((segment, index) => (
+                      <p key={`${segment.startSeconds}-${index}`}>
+                        <span>{segment.text}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
 
             <div ref={engineLogRef} className={styles.engineLog}>
               {engineLog.length === 0 ? (
@@ -2400,11 +2074,9 @@ export function App() {
               )}
             </div>
 
-            {engineStatus !== 'processing' ? (
-              <button type="button" onClick={() => setEngineDialogOpen(false)}>
-                Close
-              </button>
-            ) : null}
+            <button type="button" onClick={() => setEngineDialogOpen(false)}>
+              {engineStatus === 'processing' ? 'Hide' : 'Close'}
+            </button>
           </section>
         </div>
       ) : null}

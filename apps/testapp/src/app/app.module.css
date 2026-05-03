@@ -59,6 +59,15 @@
   opacity: 0.4;
 }
 
+.textButton,
+.textButton:hover:not(:disabled) {
+  background: transparent;
+  color: #a7f3d0;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
 :global(input),
 :global(select) {
   border: 1px solid rgba(148, 163, 184, 0.22);
