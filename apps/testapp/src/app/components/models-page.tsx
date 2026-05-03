@@ -1,5 +1,9 @@
-import type { ManagedModel, ModelVersionManifestEntry } from '@notetaker/model-manager';
+import type {
+  ManagedModel,
+  ModelVersionManifestEntry,
+} from '@notetaker/model-manager';
 import styles from '../app.module.css';
+import { ExportControls } from './export-controls';
 
 interface DirectModelFile {
   path: string;
@@ -76,9 +80,16 @@ export function ModelsPage({
           <p className={styles.label}>OPFS/models</p>
           <h2>Model manager</h2>
         </div>
-        <span>
-          {modelVersions.length} version{modelVersions.length === 1 ? '' : 's'}
-        </span>
+        <div className={styles.resultHeaderActions}>
+          <ExportControls
+            json={{ modelVersions, modelTargets, downloadSections }}
+            jsonFileName="models.json"
+          />
+          <span>
+            {modelVersions.length} version
+            {modelVersions.length === 1 ? '' : 's'}
+          </span>
+        </div>
       </div>
       <p className={styles.message}>{modelMessage}</p>
 
@@ -106,7 +117,8 @@ export function ModelsPage({
                     type="button"
                     onClick={() => onDownloadDirectModel(download)}
                     disabled={
-                      downloadingModel !== null || downloadedVersion !== undefined
+                      downloadingModel !== null ||
+                      downloadedVersion !== undefined
                     }
                   >
                     {downloadedVersion !== undefined

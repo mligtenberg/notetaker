@@ -1,1 +1,5 @@
-export type EngineStage = 'transcription' | 'diarization' | 'speaker-naming';
+export type EngineStage =
+  | 'transcription'
+  | 'diarization'
+  | 'word-sync'
+  | 'speaker-naming';

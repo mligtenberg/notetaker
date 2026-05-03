@@ -10,13 +10,15 @@ import type {
 } from '@notetaker/model-manager';
 import styles from '../app.module.css';
 import { DebugLogPanel } from './debug-log-panel';
+import { ExportControls } from './export-controls';
 
 type EngineStatus = 'idle' | 'processing' | 'error';
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 
-interface StoredAudioFile {
+interface MeetingOption {
+  id: string;
   name: string;
-  updatedAt: number;
+  date: string;
 }
 
 interface ModelDownloadTarget {
@@ -38,15 +40,15 @@ interface EnginePageProps {
     EngineStage,
     EngineProgressEvent['status'] | undefined
   >;
-  selectedAudioName: string;
-  files: StoredAudioFile[];
+  selectedMeetingId: string;
+  meetings: MeetingOption[];
   meetingNotes: MeetingNotes | null;
   engineLog: string[];
   engineBarValue: number | null;
   liveTranscriptSegments: LiveTranscriptSegment[];
   numSpeakersHint: number | null;
   modelTargets: ModelDownloadTarget[];
-  onSelectedAudioNameChange: (name: string) => void;
+  onSelectedMeetingIdChange: (id: string) => void;
   onNumSpeakersHintChange: Dispatch<SetStateAction<number | null>>;
   onRunEngine: () => void;
   getWebGpuSupportLabel: (support: WebGpuSupport) => string;
@@ -61,15 +63,15 @@ export function EnginePage({
   engineMessage,
   webGpuSupport,
   engineProgress,
-  selectedAudioName,
-  files,
+  selectedMeetingId,
+  meetings,
   meetingNotes,
   engineLog,
   engineBarValue,
   liveTranscriptSegments,
   numSpeakersHint,
   modelTargets,
-  onSelectedAudioNameChange,
+  onSelectedMeetingIdChange,
   onNumSpeakersHintChange,
   onRunEngine,
   getWebGpuSupportLabel,
@@ -147,16 +149,16 @@ export function EnginePage({
 
       <div className={styles.engineControls}>
         <select
-          value={selectedAudioName}
+          value={selectedMeetingId}
           onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-            onSelectedAudioNameChange(event.target.value)
+            onSelectedMeetingIdChange(event.target.value)
           }
-          disabled={files.length === 0 || engineStatus === 'processing'}
+          disabled={meetings.length === 0 || engineStatus === 'processing'}
         >
-          <option value="">Select recording</option>
-          {files.map((file) => (
-            <option key={`${file.name}-${file.updatedAt}`} value={file.name}>
-              {file.name}
+          <option value="">Select meeting</option>
+          {meetings.map((meeting) => (
+            <option key={meeting.id} value={meeting.id}>
+              {meeting.name} ({meeting.date})
             </option>
           ))}
         </select>
@@ -164,7 +166,7 @@ export function EnginePage({
           type="button"
           onClick={onRunEngine}
           disabled={
-            selectedAudioName.length === 0 || engineStatus === 'processing'
+            selectedMeetingId.length === 0 || engineStatus === 'processing'
           }
         >
           Run Engine
@@ -208,7 +210,15 @@ export function EnginePage({
 
       {meetingNotes !== null ? (
         <div className={styles.transcriptResult}>
-          <h3>{meetingNotes.meeting.title}</h3>
+          <div className={styles.resultHeader}>
+            <h3>{meetingNotes.meeting.title}</h3>
+            <ExportControls
+              json={meetingNotes}
+              jsonFileName="meeting-notes.json"
+              text={formatMeetingNotesText(meetingNotes)}
+              textFileName="meeting-notes.txt"
+            />
+          </div>
           <p>{meetingNotes.transcript.text}</p>
           <ul>
             {meetingNotes.transcript.segments.map((segment, index) => (
@@ -222,4 +232,10 @@ export function EnginePage({
       ) : null}
     </section>
   );
+}
+
+function formatMeetingNotesText(meetingNotes: MeetingNotes): string {
+  return meetingNotes.transcript.segments
+    .map((segment) => `${segment.speakerName}: ${segment.text}`)
+    .join('\n');
 }

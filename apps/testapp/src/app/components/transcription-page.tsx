@@ -1,15 +1,21 @@
 import type { ChangeEvent } from 'react';
-import type { EngineProgressEvent, EngineStage, Transcript } from '@notetaker/engine';
+import type {
+  EngineProgressEvent,
+  EngineStage,
+  Transcript,
+} from '@notetaker/engine';
 import type { ModelVersionManifestEntry } from '@notetaker/model-manager';
 import styles from '../app.module.css';
 import { DebugLogPanel } from './debug-log-panel';
+import { ExportControls } from './export-controls';
 
 type EngineStatus = 'idle' | 'processing' | 'error';
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 
-interface StoredAudioFile {
+interface MeetingOption {
+  id: string;
   name: string;
-  updatedAt: number;
+  date: string;
 }
 
 interface LiveTranscriptSegment {
@@ -22,15 +28,18 @@ interface TranscriptionPageProps {
   engineStatus: EngineStatus;
   engineMessage: string;
   webGpuSupport: WebGpuSupport;
-  engineProgress: Record<EngineStage, EngineProgressEvent['status'] | undefined>;
-  selectedAudioName: string;
-  files: StoredAudioFile[];
+  engineProgress: Record<
+    EngineStage,
+    EngineProgressEvent['status'] | undefined
+  >;
+  selectedMeetingId: string;
+  meetings: MeetingOption[];
   transcriptionResult: Transcript | null;
   engineLog: string[];
   engineBarValue: number | null;
   liveTranscriptSegments: LiveTranscriptSegment[];
   activeWhisper: ModelVersionManifestEntry | undefined;
-  onSelectedAudioNameChange: (name: string) => void;
+  onSelectedMeetingIdChange: (id: string) => void;
   onRunTranscription: () => void;
   getWebGpuSupportLabel: (support: WebGpuSupport) => string;
   getModelVersionTitle: (version: ModelVersionManifestEntry) => string;
@@ -41,14 +50,14 @@ export function TranscriptionPage({
   engineMessage,
   webGpuSupport,
   engineProgress,
-  selectedAudioName,
-  files,
+  selectedMeetingId,
+  meetings,
   transcriptionResult,
   engineLog,
   engineBarValue,
   liveTranscriptSegments,
   activeWhisper,
-  onSelectedAudioNameChange,
+  onSelectedMeetingIdChange,
   onRunTranscription,
   getWebGpuSupportLabel,
   getModelVersionTitle,
@@ -93,16 +102,16 @@ export function TranscriptionPage({
 
       <div className={styles.engineControls}>
         <select
-          value={selectedAudioName}
+          value={selectedMeetingId}
           onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-            onSelectedAudioNameChange(event.target.value)
+            onSelectedMeetingIdChange(event.target.value)
           }
-          disabled={files.length === 0 || engineStatus === 'processing'}
+          disabled={meetings.length === 0 || engineStatus === 'processing'}
         >
-          <option value="">Select recording</option>
-          {files.map((file) => (
-            <option key={`${file.name}-${file.updatedAt}`} value={file.name}>
-              {file.name}
+          <option value="">Select meeting</option>
+          {meetings.map((meeting) => (
+            <option key={meeting.id} value={meeting.id}>
+              {meeting.name} ({meeting.date})
             </option>
           ))}
         </select>
@@ -110,7 +119,7 @@ export function TranscriptionPage({
           type="button"
           onClick={onRunTranscription}
           disabled={
-            selectedAudioName.length === 0 || engineStatus === 'processing'
+            selectedMeetingId.length === 0 || engineStatus === 'processing'
           }
         >
           Transcribe Only
@@ -124,7 +133,9 @@ export function TranscriptionPage({
               engineBarValue === null && engineStatus === 'processing'
             }
             style={
-              engineBarValue !== null ? { width: `${engineBarValue}%` } : undefined
+              engineBarValue !== null
+                ? { width: `${engineBarValue}%` }
+                : undefined
             }
           />
         </div>
@@ -152,7 +163,15 @@ export function TranscriptionPage({
 
       {transcriptionResult !== null ? (
         <div className={styles.transcriptResult}>
-          <h3>Transcript</h3>
+          <div className={styles.resultHeader}>
+            <h3>Transcript</h3>
+            <ExportControls
+              json={transcriptionResult}
+              jsonFileName="transcript.json"
+              text={transcriptionResult.text}
+              textFileName="transcript.txt"
+            />
+          </div>
           <p>{transcriptionResult.text}</p>
           <ul>
             {transcriptionResult.segments.map((segment, index) => (

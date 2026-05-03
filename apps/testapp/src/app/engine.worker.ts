@@ -35,6 +35,30 @@ function estimateFragmentEndSeconds(
   return startSeconds + Math.max(1, wordCount * 0.45);
 }
 
+function findSpeakerForRange(
+  startSeconds: number,
+  endSeconds: number,
+  turns: SpeakerTurn[],
+): string {
+  let bestTurn: SpeakerTurn | undefined;
+  let bestOverlap = 0;
+
+  for (const turn of turns) {
+    const overlap = Math.max(
+      0,
+      Math.min(endSeconds, turn.endSeconds) -
+        Math.max(startSeconds, turn.startSeconds),
+    );
+
+    if (overlap > bestOverlap) {
+      bestTurn = turn;
+      bestOverlap = overlap;
+    }
+  }
+
+  return bestTurn?.speaker ?? 'SPEAKER_0';
+}
+
 function toWorkerTranscriptSegments(
   fragments: TimestampedText[],
 ): WorkerTranscriptSegment[] {
@@ -53,13 +77,70 @@ function toWorkerTranscriptSegments(
   });
 }
 
+function anchorWordsToTranscriptSegments(
+  words: TimestampedWord[],
+  transcript: Transcript,
+): TimestampedWord[] {
+  let wordIndex = 0;
+  const anchoredWords: TimestampedWord[] = [];
+
+  for (const segment of transcript.segments) {
+    const segmentWords = segment.text.match(/\S+/g) ?? [];
+
+    if (segmentWords.length === 0) {
+      continue;
+    }
+
+    const startSeconds = segment.startSeconds;
+    const endSeconds = Math.max(
+      segment.endSeconds,
+      startSeconds + segmentWords.length * 0.25,
+    );
+    const stepSeconds =
+      segmentWords.length === 1
+        ? 0
+        : (endSeconds - startSeconds) / segmentWords.length;
+
+    for (let index = 0; index < segmentWords.length; index += 1) {
+      const word = words[wordIndex];
+      const alignedSeconds = (word?.timestampInMs ?? -1) / 1000;
+      const interpolatedSeconds = startSeconds + index * stepSeconds;
+      const timestampInMs =
+        alignedSeconds >= startSeconds - 1 && alignedSeconds <= endSeconds + 1
+          ? Math.round(alignedSeconds * 1000)
+          : Math.round(interpolatedSeconds * 1000);
+
+      anchoredWords.push({
+        word: word?.word ?? segmentWords[index],
+        timestampInMs,
+      });
+      wordIndex += 1;
+    }
+  }
+
+  return anchoredWords;
+}
+
+export interface TimestampedWord {
+  word: string;
+  timestampInMs: number;
+}
+
 export interface EngineWorkerRequest {
   id: number;
-  mode?: 'engine' | 'transcription' | 'diarization';
+  mode?:
+    | 'engine'
+    | 'transcription'
+    | 'diarization'
+    | 'word-sync'
+    | 'speaker-naming';
   fileName: string;
   audio: Float32Array;
+  audioSampleRate?: number;
   useWebGpu?: boolean;
   numSpeakers?: number | null;
+  transcript?: Transcript;
+  diarization?: SpeakerTurn[];
 }
 
 export type EngineWorkerResponse =
@@ -92,6 +173,20 @@ export type EngineWorkerResponse =
       ok: true;
       mode: 'diarization';
       turns: SpeakerTurn[];
+    }
+  | {
+      id: number;
+      type: 'result';
+      ok: true;
+      mode: 'word-sync';
+      words: TimestampedWord[];
+    }
+  | {
+      id: number;
+      type: 'result';
+      ok: true;
+      mode: 'speaker-naming';
+      names: Record<string, string>;
     }
   | { id: number; type: 'result'; ok: false; error: string };
 
@@ -180,6 +275,98 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
               speakerName: 'SPEAKER_0',
             })),
           },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(response);
+        return;
+      }
+
+      if (mode === 'word-sync') {
+        const transcript = event.data.transcript;
+        if (transcript === undefined) {
+          throw new Error('word-sync requires a transcript.');
+        }
+        const progress: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'word-sync', status: 'started' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(progress);
+        const words = await engine.alignTranscriptToAudio(
+          transcript.text,
+          audio,
+          log,
+          event.data.audioSampleRate,
+        );
+        const anchoredWords = anchorWordsToTranscriptSegments(
+          words,
+          transcript,
+        );
+        log(
+          `[word-sync] anchored ${anchoredWords.length} word timestamp(s) to ${transcript.segments.length} transcript segment(s).`,
+        );
+        const completed: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'word-sync', status: 'completed' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(completed);
+        const response: EngineWorkerResponse = {
+          id,
+          type: 'result',
+          ok: true,
+          mode: 'word-sync',
+          words: anchoredWords.map((w) => ({
+            word: w.word,
+            timestampInMs: w.timestampInMs,
+          })),
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(response);
+        return;
+      }
+
+      if (mode === 'speaker-naming') {
+        const transcript = event.data.transcript;
+        const turns = event.data.diarization;
+        if (transcript === undefined || turns === undefined) {
+          throw new Error(
+            'speaker-naming requires a transcript and diarization.',
+          );
+        }
+        const progress: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'speaker-naming', status: 'started' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(progress);
+
+        const segments = transcript.segments.map((segment) => ({
+          text: segment.text,
+          startSeconds: segment.startSeconds,
+          endSeconds: segment.endSeconds,
+          speaker: findSpeakerForRange(
+            segment.startSeconds,
+            segment.endSeconds,
+            turns,
+          ),
+        }));
+
+        const namesMap = await engine.nameSpeakers(
+          { id: fileName, title: fileName, audio },
+          segments,
+        );
+
+        const completed: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'speaker-naming', status: 'completed' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(completed);
+        const response: EngineWorkerResponse = {
+          id,
+          type: 'result',
+          ok: true,
+          mode: 'speaker-naming',
+          names: Object.fromEntries(namesMap),
         };
         (self as DedicatedWorkerGlobalScope).postMessage(response);
         return;

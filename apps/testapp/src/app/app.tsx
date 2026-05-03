@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  AudioRecorder,
-  type AudioRecordingResult,
-} from '@notetaker/audio-recorder';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { AudioRecorder } from '@notetaker/audio-recorder';
 import {
   type EngineProgressEvent,
   type EngineStage,
@@ -10,7 +8,12 @@ import {
   type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
-import { FileSystem } from '@notetaker/filesystem';
+import {
+  FileSystem,
+  MeetingsRepository,
+  type MeetingArtifactKind,
+  type StoredMeetingSummary,
+} from '@notetaker/filesystem';
 import {
   ModelManager,
   type ManagedModel,
@@ -23,19 +26,11 @@ import type {
 } from './engine.worker';
 import { DiarizationPage } from './components/diarization-page';
 import { EnginePage } from './components/engine-page';
+import { MeetingDetailPage } from './components/meeting-detail-page';
+import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
-import { RecordingsPage } from './components/recordings-page';
 import { TranscriptionPage } from './components/transcription-page';
 import styles from './app.module.css';
-
-interface StoredAudioFile {
-  name: string;
-  size: number;
-  type: string;
-  updatedAt: number;
-  url: string;
-  fileHandle: FileSystemFileHandle;
-}
 
 interface LiveTranscriptSegment {
   text: string;
@@ -47,14 +42,47 @@ type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
 type AppPage =
   | 'models'
-  | 'recordings'
+  | 'meetings'
   | 'transcription'
   | 'diarization'
   | 'engine';
-type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
-type IterableDirectoryHandle = FileSystemDirectoryHandle & {
-  entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+
+const PAGE_PATHS: Record<AppPage, string> = {
+  models: '/models',
+  meetings: '/meetings',
+  transcription: '/transcription',
+  diarization: '/diarization',
+  engine: '/engine',
 };
+
+function resolveActivePage(pathname: string): AppPage {
+  const segment = pathname.split('/')[1] ?? '';
+
+  if (
+    segment === 'models' ||
+    segment === 'meetings' ||
+    segment === 'transcription' ||
+    segment === 'diarization' ||
+    segment === 'engine'
+  ) {
+    return segment;
+  }
+
+  return 'models';
+}
+
+function resolveViewingMeetingId(pathname: string): string | null {
+  const parts = pathname.split('/');
+  if (
+    parts[1] === 'meetings' &&
+    parts[2] !== undefined &&
+    parts[2].length > 0
+  ) {
+    return parts[2];
+  }
+  return null;
+}
+type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type NavigatorWithWebGpu = Navigator & {
   gpu?: {
     requestAdapter(): Promise<unknown>;
@@ -384,12 +412,6 @@ const WAV2VEC2_DOWNLOADS: DirectModelDownload[] = [
   }),
 ];
 
-function isFileHandle(
-  handle: FileSystemHandle,
-): handle is FileSystemFileHandle {
-  return handle.kind === 'file';
-}
-
 const fileSystem = new FileSystem();
 
 const WHISPER_SAMPLE_RATE = 16_000;
@@ -625,30 +647,40 @@ async function downloadBlobWithProgress(
   return new Blob(chunks, { type: file.type });
 }
 
-async function loadStoredAudioFiles(
-  directoryHandle: FileSystemDirectoryHandle,
-): Promise<StoredAudioFile[]> {
-  const files: StoredAudioFile[] = [];
-
-  const iterableDirectoryHandle = directoryHandle as IterableDirectoryHandle;
-
-  for await (const [name, handle] of iterableDirectoryHandle.entries()) {
-    if (!isFileHandle(handle)) {
-      continue;
-    }
-
-    const file = await handle.getFile();
-    files.push({
-      name,
-      size: file.size,
-      type: file.type || 'audio file',
-      updatedAt: file.lastModified,
-      url: URL.createObjectURL(file),
-      fileHandle: handle,
-    });
+function mimeTypeToExtension(mimeType: string): string {
+  if (mimeType.includes('mp4')) {
+    return 'm4a';
   }
 
-  return files.sort((first, second) => second.updatedAt - first.updatedAt);
+  if (mimeType.includes('ogg')) {
+    return 'ogg';
+  }
+
+  if (mimeType.includes('wav')) {
+    return 'wav';
+  }
+
+  if (mimeType.includes('mpeg') || mimeType.includes('mp3')) {
+    return 'mp3';
+  }
+
+  return 'webm';
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function collectSpeakerNames(notes: MeetingNotes): Record<string, string> {
+  const map: Record<string, string> = {};
+
+  for (const segment of notes.transcript.segments) {
+    if (segment.speaker.length > 0 && map[segment.speaker] === undefined) {
+      map[segment.speaker] = segment.speakerName;
+    }
+  }
+
+  return map;
 }
 
 async function detectWebGpuSupport(): Promise<boolean> {
@@ -682,41 +714,34 @@ function getWhisperRuntimeLabel(version: ModelVersionManifestEntry): string {
     : 'auto device with quantization from the active Whisper model';
 }
 
-function useObjectUrlCleanup(files: StoredAudioFile[]): void {
-  useEffect(() => {
-    return () => {
-      for (const file of files) {
-        URL.revokeObjectURL(file.url);
-      }
-    };
-  }, [files]);
-}
-
 export function App() {
   const recorderRef = useRef<AudioRecorder | null>(null);
-  const directoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const meetingsRepoRef = useRef<MeetingsRepository | null>(null);
   const modelManagerRef = useRef<ModelManager | null>(null);
   const engineWorkerRef = useRef<Worker | null>(null);
   const engineRequestIdRef = useRef(0);
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [engineStatus, setEngineStatus] = useState<EngineStatus>('idle');
-  const [message, setMessage] = useState('Opening OPFS audio-files folder...');
+  const [message, setMessage] = useState('Opening OPFS meetings folder...');
   const [modelMessage, setModelMessage] = useState(
     'Opening OPFS models folder...',
   );
   const [engineMessage, setEngineMessage] = useState(
-    'Select a recording and run the engine.',
+    'Select a meeting and run the engine.',
   );
-  const [files, setFiles] = useState<StoredAudioFile[]>([]);
-  const [lastRecording, setLastRecording] =
-    useState<AudioRecordingResult | null>(null);
+  const [meetings, setMeetings] = useState<StoredMeetingSummary[]>([]);
+  const [meetingUrls, setMeetingUrls] = useState<Record<string, string>>({});
+  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [modelVersions, setModelVersions] = useState<
     ModelVersionManifestEntry[]
   >([]);
   const [downloadingModel, setDownloadingModel] = useState<ManagedModel | null>(
     null,
   );
-  const [selectedAudioName, setSelectedAudioName] = useState('');
+  const [selectedMeetingId, setSelectedMeetingId] = useState('');
+  const [recordingMeetingId, setRecordingMeetingId] = useState<string | null>(
+    null,
+  );
   const [meetingNotes, setMeetingNotes] = useState<MeetingNotes | null>(null);
   const [transcriptionResult, setTranscriptionResult] =
     useState<Transcript | null>(null);
@@ -740,13 +765,30 @@ export function App() {
   >({
     transcription: undefined,
     diarization: undefined,
+    'word-sync': undefined,
     'speaker-naming': undefined,
   });
-  const [activePage, setActivePage] = useState<AppPage>('models');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activePage = resolveActivePage(location.pathname);
+  const viewingMeetingId = resolveViewingMeetingId(location.pathname);
   const [downloadProgress, setDownloadProgress] =
     useState<DownloadProgressState | null>(null);
 
-  useObjectUrlCleanup(files);
+  useEffect(() => {
+    if (location.pathname === '/' || location.pathname === '') {
+      navigate('/models', { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
+  useEffect(() => {
+    return () => {
+      for (const url of Object.values(meetingUrls)) {
+        URL.revokeObjectURL(url);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!engineDialogOpen) {
@@ -760,18 +802,64 @@ export function App() {
     }
   }, [engineDialogOpen, engineLog]);
 
-  async function refreshFiles(directoryHandle = directoryHandleRef.current) {
-    if (directoryHandle === null) {
+  async function refreshMeetings(repo = meetingsRepoRef.current) {
+    if (repo === null) {
       return;
     }
 
-    const storedFiles = await loadStoredAudioFiles(directoryHandle);
-    setFiles(storedFiles);
+    const summaries = await repo.list();
 
-    if (selectedAudioName.length === 0 && storedFiles[0] !== undefined) {
-      setSelectedAudioName(storedFiles[0].name);
+    setMeetingUrls((current) => {
+      const next: Record<string, string> = {};
+      const keepIds = new Set(summaries.map((m) => m.id));
+
+      for (const [id, url] of Object.entries(current)) {
+        if (keepIds.has(id)) {
+          next[id] = url;
+        } else {
+          URL.revokeObjectURL(url);
+        }
+      }
+
+      return next;
+    });
+
+    setMeetings(summaries);
+
+    for (const summary of summaries) {
+      if (meetingUrls[summary.id] !== undefined) {
+        continue;
+      }
+
+      try {
+        const file = await repo.loadRecording(summary.id);
+        const url = URL.createObjectURL(file);
+        setMeetingUrls((current) =>
+          current[summary.id] === undefined
+            ? { ...current, [summary.id]: url }
+            : (URL.revokeObjectURL(url), current),
+        );
+      } catch {
+        // Recording missing — skip url generation.
+      }
+    }
+
+    if (selectedMeetingId.length === 0 && summaries[0] !== undefined) {
+      setSelectedMeetingId(summaries[0].id);
     }
   }
+
+  const meetingOptions = useMemo(
+    () =>
+      meetings
+        .filter((meeting) => meeting.recordingFileName !== null)
+        .map((meeting) => ({
+          id: meeting.id,
+          name: meeting.name,
+          date: meeting.date,
+        })),
+    [meetings],
+  );
 
   async function refreshModelVersions(modelManager = modelManagerRef.current) {
     if (modelManager === null) {
@@ -779,6 +867,26 @@ export function App() {
     }
 
     setModelVersions(await modelManager.listVersions());
+  }
+
+  async function saveMeetingArtifact<T>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+    data: T,
+  ): Promise<void> {
+    const repo = meetingsRepoRef.current;
+
+    if (repo === null) {
+      throw new Error('Meetings repository is not ready.');
+    }
+
+    await repo.saveArtifact(meetingId, kind, data);
+
+    if (kind === 'diarization') {
+      await repo.deleteArtifact(meetingId, 'speaker-names');
+    }
+
+    await refreshMeetings(repo);
   }
 
   function getKnownDownloadSize(download: DirectModelDownload): number {
@@ -856,20 +964,21 @@ export function App() {
 
     async function setupRecorder() {
       try {
-        const directoryHandle = await fileSystem.getAudioFilesDir();
+        const meetingsDir = await fileSystem.getMeetingsDir();
         const modelManager = await ModelManager.create(fileSystem);
 
         if (!isMounted) {
           return;
         }
 
-        directoryHandleRef.current = directoryHandle;
+        const repo = new MeetingsRepository(meetingsDir);
+        meetingsRepoRef.current = repo;
         modelManagerRef.current = modelManager;
-        recorderRef.current = new AudioRecorder(directoryHandle);
-        await refreshFiles(directoryHandle);
+        recorderRef.current = new AudioRecorder(meetingsDir);
+        await refreshMeetings(repo);
         await refreshModelVersions(modelManager);
         setStatus('ready');
-        setMessage('Ready. Recordings will be saved to OPFS/audio-files.');
+        setMessage('Ready. Meetings will be saved to OPFS/meetings.');
         setModelMessage(
           'Ready. Manage downloaded model versions in OPFS/models.',
         );
@@ -882,7 +991,7 @@ export function App() {
         setMessage(
           error instanceof Error
             ? error.message
-            : 'Failed to open OPFS audio-files folder.',
+            : 'Failed to open OPFS meetings folder.',
         );
         setModelMessage(
           error instanceof Error
@@ -902,7 +1011,70 @@ export function App() {
     };
   }, []);
 
-  async function handleStartRecording() {
+  async function handleCreateMeeting() {
+    const repo = meetingsRepoRef.current;
+
+    if (repo === null || creatingMeeting) {
+      return;
+    }
+
+    try {
+      setCreatingMeeting(true);
+      const meeting = await repo.create({
+        name: 'Untitled meeting',
+        date: todayIsoDate(),
+        participantCount: 2,
+      });
+      await refreshMeetings(repo);
+      setSelectedMeetingId(meeting.id);
+      setStatus('ready');
+      setMessage('');
+      navigate(`/meetings/${meeting.id}`);
+    } catch (error) {
+      setStatus('error');
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to create meeting.',
+      );
+    } finally {
+      setCreatingMeeting(false);
+    }
+  }
+
+  const loadMeetingArtifact = useCallback(
+    <T,>(meetingId: string, kind: MeetingArtifactKind): Promise<T | null> => {
+      const repo = meetingsRepoRef.current;
+
+      if (repo === null) {
+        return Promise.resolve(null);
+      }
+
+      return repo.loadArtifact<T>(meetingId, kind);
+    },
+    [],
+  );
+
+  async function handleUpdateMeeting(
+    id: string,
+    patch: Partial<{ name: string; date: string; participantCount: number }>,
+  ) {
+    const repo = meetingsRepoRef.current;
+
+    if (repo === null) {
+      return;
+    }
+
+    try {
+      await repo.updateMetadata(id, patch);
+      await refreshMeetings(repo);
+    } catch (error) {
+      setStatus('error');
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to update meeting.',
+      );
+    }
+  }
+
+  async function handleStartRecording(meetingId: string) {
     const recorder = recorderRef.current;
     if (recorder === null) {
       return;
@@ -911,10 +1083,9 @@ export function App() {
     try {
       setMessage('Requesting microphone access...');
       await recorder.start();
+      setRecordingMeetingId(meetingId);
       setStatus('recording');
-      setMessage(
-        'Recording. Stop to persist the audio file in OPFS/audio-files.',
-      );
+      setMessage('Recording. Stop to attach the audio to the meeting.');
     } catch (error) {
       setStatus('error');
       setMessage(
@@ -925,19 +1096,48 @@ export function App() {
 
   async function handleStopRecording() {
     const recorder = recorderRef.current;
-    if (recorder === null) {
+    const repo = meetingsRepoRef.current;
+    const meetingId = recordingMeetingId;
+
+    if (recorder === null || repo === null || meetingId === null) {
       return;
     }
 
     try {
       setStatus('saving');
-      setMessage('Saving recording to OPFS/audio-files...');
+      setMessage('Saving recording...');
       const recording = await recorder.stop();
-      setLastRecording(recording);
-      await refreshFiles();
+      // Remove the scratch file the recorder wrote to the meetings root.
+      try {
+        await repo.directoryHandle.removeEntry(recording.fileName);
+      } catch {
+        // Ignore; scratch file may already be gone.
+      }
+
+      const summary = await repo.attachRecording(meetingId, {
+        blob: recording.blob,
+        mimeType: recording.mimeType,
+        extension: mimeTypeToExtension(recording.mimeType),
+      });
+
+      // Drop any cached object URL so the new recording is reloaded.
+      setMeetingUrls((current) => {
+        const url = current[meetingId];
+        if (url === undefined) {
+          return current;
+        }
+        URL.revokeObjectURL(url);
+        const next = { ...current };
+        delete next[meetingId];
+        return next;
+      });
+
+      await refreshMeetings(repo);
+      setRecordingMeetingId(null);
       setStatus('ready');
-      setMessage(`Saved ${recording.fileName} to OPFS/audio-files.`);
+      setMessage(`Attached recording to "${summary.name}".`);
     } catch (error) {
+      setRecordingMeetingId(null);
       setStatus('error');
       setMessage(
         error instanceof Error ? error.message : 'Failed to save recording.',
@@ -945,61 +1145,62 @@ export function App() {
     }
   }
 
-  async function handleUploadRecordings(filesToUpload: FileList | null) {
-    const directoryHandle = directoryHandleRef.current;
+  async function handleUploadRecording(meetingId: string, file: File) {
+    const repo = meetingsRepoRef.current;
 
-    if (
-      directoryHandle === null ||
-      filesToUpload === null ||
-      filesToUpload.length === 0
-    ) {
+    if (repo === null) {
       return;
     }
 
     try {
       setStatus('saving');
-      setMessage(
-        `Importing ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'}...`,
-      );
+      setMessage(`Importing ${file.name}...`);
 
-      for (const file of Array.from(filesToUpload)) {
-        const fileHandle = await directoryHandle.getFileHandle(file.name, {
-          create: true,
-        });
-        const writable = await fileHandle.createWritable();
+      const mimeType = file.type || 'application/octet-stream';
+      const extensionFromName = file.name.includes('.')
+        ? file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase()
+        : '';
+      const extension =
+        extensionFromName.length > 0
+          ? extensionFromName
+          : mimeTypeToExtension(mimeType);
 
-        try {
-          await writable.write(file);
-          await writable.close();
-        } catch (error) {
-          await writable.abort();
-          throw error;
+      const summary = await repo.attachRecording(meetingId, {
+        blob: file,
+        mimeType,
+        extension,
+      });
+
+      setMeetingUrls((current) => {
+        const url = current[meetingId];
+        if (url === undefined) {
+          return current;
         }
-      }
+        URL.revokeObjectURL(url);
+        const next = { ...current };
+        delete next[meetingId];
+        return next;
+      });
 
-      await refreshFiles(directoryHandle);
+      await refreshMeetings(repo);
       setStatus('ready');
-      setMessage(
-        `Imported ${filesToUpload.length} audio file${filesToUpload.length === 1 ? '' : 's'} into OPFS/audio-files.`,
-      );
+      setMessage(`Imported ${file.name} into "${summary.name}".`);
     } catch (error) {
       setStatus('error');
       setMessage(
-        error instanceof Error
-          ? error.message
-          : 'Failed to import audio files.',
+        error instanceof Error ? error.message : 'Failed to import audio file.',
       );
     }
   }
 
-  async function handleDeleteRecording(file: StoredAudioFile) {
-    const directoryHandle = directoryHandleRef.current;
+  async function handleDeleteMeeting(meeting: StoredMeetingSummary) {
+    const repo = meetingsRepoRef.current;
 
-    if (directoryHandle === null) {
+    if (repo === null) {
       return;
     }
 
-    const confirmed = window.confirm(`Delete ${file.name}?`);
+    const confirmed = window.confirm(`Delete meeting "${meeting.name}"?`);
 
     if (!confirmed) {
       return;
@@ -1007,38 +1208,49 @@ export function App() {
 
     try {
       setStatus('saving');
-      setMessage(`Deleting ${file.name} from OPFS/audio-files...`);
-      await directoryHandle.removeEntry(file.name);
+      setMessage(`Deleting meeting "${meeting.name}"...`);
+      await repo.delete(meeting.id);
 
-      if (selectedAudioName === file.name) {
-        setSelectedAudioName('');
+      const url = meetingUrls[meeting.id];
+      if (url !== undefined) {
+        URL.revokeObjectURL(url);
+        setMeetingUrls((current) => {
+          const next = { ...current };
+          delete next[meeting.id];
+          return next;
+        });
+      }
+
+      if (selectedMeetingId === meeting.id) {
+        setSelectedMeetingId('');
         setMeetingNotes(null);
         setTranscriptionResult(null);
         setDiarizationResult(null);
-        setEngineMessage('Select a recording and run the engine.');
+        setEngineMessage('Select a meeting and run the engine.');
       }
 
-      if (lastRecording?.fileName === file.name) {
-        setLastRecording(null);
+      if (viewingMeetingId === meeting.id) {
+        navigate('/meetings');
       }
 
-      await refreshFiles(directoryHandle);
+      await refreshMeetings(repo);
       setStatus('ready');
-      setMessage(`Deleted ${file.name} from OPFS/audio-files.`);
+      setMessage(`Deleted meeting "${meeting.name}".`);
     } catch (error) {
       setStatus('error');
       setMessage(
         error instanceof Error
           ? error.message
-          : `Failed to delete ${file.name}.`,
+          : `Failed to delete meeting "${meeting.name}".`,
       );
     }
   }
 
   function handleCancelRecording() {
     recorderRef.current?.cancel();
+    setRecordingMeetingId(null);
     setStatus('ready');
-    setMessage('Recording canceled. No audio file was stored.');
+    setMessage('Recording canceled. No audio was attached.');
   }
 
   function getModelVersions(model: ManagedModel): ModelVersionManifestEntry[] {
@@ -1248,13 +1460,16 @@ export function App() {
   }
 
   async function handleRunEngine() {
-    const selectedFile = files.find((file) => file.name === selectedAudioName);
+    const repo = meetingsRepoRef.current;
+    const selectedMeeting = meetings.find(
+      (meeting) => meeting.id === selectedMeetingId,
+    );
     const missingModel = MODEL_DOWNLOAD_TARGETS.find(
       (target) => getActiveModelVersion(target.model) === undefined,
     );
 
-    if (selectedFile === undefined) {
-      setEngineMessage('Select a stored recording first.');
+    if (repo === null || selectedMeeting === undefined) {
+      setEngineMessage('Select a stored meeting first.');
       return;
     }
 
@@ -1264,20 +1479,21 @@ export function App() {
     }
 
     setEngineStatus('processing');
-    setEngineMessage(`Processing ${selectedFile.name}...`);
+    setEngineMessage(`Processing ${selectedMeeting.name}...`);
     setEngineDialogMode('engine');
     setEngineDialogOpen(true);
-    setEngineLog([`Starting transcription of ${selectedFile.name}.`]);
+    setEngineLog([`Starting engine for ${selectedMeeting.name}.`]);
     setLiveTranscriptSegments([]);
     setEngineBarValue(null);
     setEngineProgress({
       transcription: undefined,
       diarization: undefined,
+      'word-sync': undefined,
       'speaker-naming': undefined,
     });
 
     try {
-      const audioFile = await selectedFile.fileHandle.getFile();
+      const audioFile = await repo.loadRecording(selectedMeeting.id);
       const activeWhisper = getActiveModelVersion('whisper');
       const activePyannote = getActiveModelVersion('pyannote');
       const activeGemma4 = getActiveModelVersion('gemma4');
@@ -1290,11 +1506,10 @@ export function App() {
         throw new Error('Download and activate all required models first.');
       }
 
-      setEngineMessage(`Decoding ${selectedFile.name}...`);
+      setEngineMessage(`Decoding ${selectedMeeting.name}...`);
       setEngineLog((current) => [
         ...current,
-        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
-        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
+        `Decoding ${selectedMeeting.name} (${formatBytes(audioFile.size)})...`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
@@ -1314,7 +1529,7 @@ export function App() {
         `Using Pyannote ${getModelVersionTitle(activePyannote)}.`,
         `Using Gemma 4 ${getModelVersionTitle(activeGemma4)}.`,
       ]);
-      setEngineMessage(`Processing ${selectedFile.name}...`);
+      setEngineMessage(`Processing ${selectedMeeting.name}...`);
       const worker = getEngineWorker();
       const requestId = ++engineRequestIdRef.current;
 
@@ -1356,7 +1571,7 @@ export function App() {
         worker.addEventListener('message', handleMessage);
         const request: EngineWorkerRequest = {
           id: requestId,
-          fileName: selectedFile.name,
+          fileName: selectedMeeting.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
           numSpeakers: numSpeakersHint,
@@ -1368,9 +1583,24 @@ export function App() {
         appendEngineLog(`[worker] posted engine request ${requestId}.`);
       });
 
+      await repo.saveArtifact(
+        selectedMeeting.id,
+        'transcript',
+        notes.transcript,
+      );
+      const speakerNames = collectSpeakerNames(notes);
+      if (Object.keys(speakerNames).length > 0) {
+        await repo.saveArtifact(
+          selectedMeeting.id,
+          'speaker-names',
+          speakerNames,
+        );
+      }
+      await refreshMeetings(repo);
+
       setMeetingNotes(notes);
       setEngineStatus('idle');
-      setEngineMessage(`Engine completed for ${selectedFile.name}.`);
+      setEngineMessage(`Engine completed for ${selectedMeeting.name}.`);
     } catch (error) {
       setEngineStatus('error');
       setEngineMessage(
@@ -1379,10 +1609,13 @@ export function App() {
     }
   }
 
-  async function handleRunTranscription() {
-    const selectedFile = files.find((file) => file.name === selectedAudioName);
-    if (selectedFile === undefined) {
-      setEngineMessage('Select a stored recording first.');
+  async function handleRunTranscription(meetingId: string = selectedMeetingId) {
+    const repo = meetingsRepoRef.current;
+    const selectedMeeting = meetings.find(
+      (meeting) => meeting.id === meetingId,
+    );
+    if (repo === null || selectedMeeting === undefined) {
+      setEngineMessage('Select a stored meeting first.');
       return;
     }
 
@@ -1394,24 +1627,26 @@ export function App() {
     }
 
     setEngineStatus('processing');
-    setEngineMessage(`Transcribing ${selectedFile.name}...`);
-    setEngineLog([`Starting transcription-only run for ${selectedFile.name}.`]);
+    setEngineMessage(`Transcribing ${selectedMeeting.name}...`);
+    setEngineLog([
+      `Starting transcription-only run for ${selectedMeeting.name}.`,
+    ]);
     setLiveTranscriptSegments([]);
     setEngineBarValue(null);
     setEngineProgress({
       transcription: undefined,
       diarization: undefined,
+      'word-sync': undefined,
       'speaker-naming': undefined,
     });
     setTranscriptionResult(null);
 
     try {
-      const audioFile = await selectedFile.fileHandle.getFile();
-      setEngineMessage(`Decoding ${selectedFile.name}...`);
+      const audioFile = await repo.loadRecording(selectedMeeting.id);
+      setEngineMessage(`Decoding ${selectedMeeting.name}...`);
       setEngineLog((current) => [
         ...current,
-        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
-        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
+        `Decoding ${selectedMeeting.name} (${formatBytes(audioFile.size)})...`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
@@ -1429,7 +1664,7 @@ export function App() {
         `Runtime: ${getWhisperRuntimeLabel(activeWhisper)}`,
         `Using Whisper ${getModelVersionTitle(activeWhisper)}.`,
       ]);
-      setEngineMessage(`Transcribing ${selectedFile.name}...`);
+      setEngineMessage(`Transcribing ${selectedMeeting.name}...`);
       const worker = getEngineWorker();
       const requestId = ++engineRequestIdRef.current;
 
@@ -1468,7 +1703,7 @@ export function App() {
         const request: EngineWorkerRequest = {
           id: requestId,
           mode: 'transcription',
-          fileName: selectedFile.name,
+          fileName: selectedMeeting.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
         };
@@ -1479,9 +1714,14 @@ export function App() {
         appendEngineLog(`[worker] posted transcription request ${requestId}.`);
       });
 
+      await repo.saveArtifact(selectedMeeting.id, 'transcript', transcript);
+      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
+      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await refreshMeetings(repo);
+
       setTranscriptionResult(transcript);
       setEngineStatus('idle');
-      setEngineMessage(`Transcription completed for ${selectedFile.name}.`);
+      setEngineMessage(`Transcription completed for ${selectedMeeting.name}.`);
     } catch (error) {
       setEngineStatus('error');
       setEngineMessage(
@@ -1490,11 +1730,14 @@ export function App() {
     }
   }
 
-  async function handleRunDiarization() {
-    const selectedFile = files.find((file) => file.name === selectedAudioName);
+  async function handleRunDiarization(meetingId: string = selectedMeetingId) {
+    const repo = meetingsRepoRef.current;
+    const selectedMeeting = meetings.find(
+      (meeting) => meeting.id === meetingId,
+    );
 
-    if (selectedFile === undefined) {
-      setEngineMessage('Select a stored recording first.');
+    if (repo === null || selectedMeeting === undefined) {
+      setEngineMessage('Select a stored meeting first.');
       return;
     }
 
@@ -1506,22 +1749,22 @@ export function App() {
     }
 
     setEngineStatus('processing');
-    setEngineMessage(`Diarizing ${selectedFile.name}...`);
-    setEngineLog([`Starting diarization of ${selectedFile.name}.`]);
+    setEngineMessage(`Diarizing ${selectedMeeting.name}...`);
+    setEngineLog([`Starting diarization of ${selectedMeeting.name}.`]);
     setEngineBarValue(null);
     setEngineProgress({
       transcription: undefined,
       diarization: undefined,
+      'word-sync': undefined,
       'speaker-naming': undefined,
     });
     setDiarizationResult(null);
 
     try {
-      const audioFile = await selectedFile.fileHandle.getFile();
+      const audioFile = await repo.loadRecording(selectedMeeting.id);
       setEngineLog((current) => [
         ...current,
-        `Decoding ${selectedFile.name} (${formatBytes(audioFile.size)})...`,
-        `[file] selected=${selectedFile.name} handleSize=${formatBytes(selectedFile.size)} currentSize=${formatBytes(audioFile.size)} type=${audioFile.type || selectedFile.type || 'unknown'}`,
+        `Decoding ${selectedMeeting.name} (${formatBytes(audioFile.size)})...`,
       ]);
       const samples = await decodeAudioBlobToMonoFloat32(
         audioFile,
@@ -1580,7 +1823,7 @@ export function App() {
         const request: EngineWorkerRequest = {
           id: requestId,
           mode: 'diarization',
-          fileName: selectedFile.name,
+          fileName: selectedMeeting.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
           numSpeakers: numSpeakersHint,
@@ -1592,6 +1835,11 @@ export function App() {
         appendEngineLog(`[worker] posted diarization request ${requestId}.`);
       });
 
+      await repo.saveArtifact(selectedMeeting.id, 'diarization', turns);
+      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
+      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await refreshMeetings(repo);
+
       setDiarizationResult(turns);
       setEngineStatus('idle');
       setEngineMessage(
@@ -1601,6 +1849,187 @@ export function App() {
       setEngineStatus('error');
       setEngineMessage(
         error instanceof Error ? error.message : 'Diarization failed.',
+      );
+    }
+  }
+
+  async function handleRunWordSync(meetingId: string) {
+    const repo = meetingsRepoRef.current;
+    const meeting = meetings.find((m) => m.id === meetingId);
+
+    if (repo === null || meeting === undefined) {
+      setEngineMessage('Select a stored meeting first.');
+      return;
+    }
+
+    if (!meeting.artifacts.transcript || !meeting.artifacts.diarization) {
+      setEngineMessage('Generate transcript and diarization first.');
+      return;
+    }
+
+    if (getActiveModelVersion('wav2vec2') === undefined) {
+      setEngineMessage('Download a Wav2Vec2 model first.');
+      return;
+    }
+
+    setEngineStatus('processing');
+    setEngineMessage(`Aligning words for ${meeting.name}...`);
+    setEngineLog([`Starting word-sync for ${meeting.name}.`]);
+    setEngineBarValue(null);
+
+    try {
+      const transcript = await repo.loadArtifact<Transcript>(
+        meetingId,
+        'transcript',
+      );
+      if (transcript === null) {
+        throw new Error('Transcript artifact missing.');
+      }
+
+      const audioFile = await repo.loadRecording(meetingId);
+      const samples = await decodeAudioBlobToMonoFloat32(
+        audioFile,
+        WHISPER_SAMPLE_RATE,
+        appendEngineLog,
+      );
+
+      const worker = getEngineWorker();
+      const requestId = ++engineRequestIdRef.current;
+
+      const words = await new Promise<unknown[]>((resolve, reject) => {
+        const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
+          const msg = event.data;
+          if (msg.id !== requestId) return;
+          if (handleWorkerUpdate(msg)) return;
+          if (msg.type !== 'result') return;
+          worker.removeEventListener('message', handleMessage);
+          if (msg.ok) {
+            if (msg.mode !== 'word-sync') {
+              reject(new Error('Worker returned an unexpected result.'));
+              return;
+            }
+            resolve(msg.words);
+          } else {
+            reject(new Error(msg.error));
+          }
+        };
+
+        worker.addEventListener('message', handleMessage);
+        const request: EngineWorkerRequest = {
+          id: requestId,
+          mode: 'word-sync',
+          fileName: meeting.name,
+          audio: samples,
+          audioSampleRate: WHISPER_SAMPLE_RATE,
+          useWebGpu: webGpuSupport === 'supported',
+          transcript,
+        };
+        worker.postMessage(request, [samples.buffer]);
+      });
+
+      await repo.saveArtifact(meetingId, 'word-sync', words);
+      await repo.deleteArtifact(meetingId, 'speaker-names');
+      await refreshMeetings(repo);
+      setEngineStatus('idle');
+      setEngineMessage(
+        `Word sync completed for ${meeting.name} (${words.length} words).`,
+      );
+    } catch (error) {
+      setEngineStatus('error');
+      setEngineMessage(
+        error instanceof Error ? error.message : 'Word sync failed.',
+      );
+    }
+  }
+
+  async function handleRunSpeakerNaming(meetingId: string) {
+    const repo = meetingsRepoRef.current;
+    const meeting = meetings.find((m) => m.id === meetingId);
+
+    if (repo === null || meeting === undefined) {
+      setEngineMessage('Select a stored meeting first.');
+      return;
+    }
+
+    if (!meeting.artifacts['word-sync']) {
+      setEngineMessage('Generate word sync first.');
+      return;
+    }
+
+    if (getActiveModelVersion('gemma4') === undefined) {
+      setEngineMessage('Download a Gemma 4 model first.');
+      return;
+    }
+
+    setEngineStatus('processing');
+    setEngineMessage(`Naming speakers for ${meeting.name}...`);
+    setEngineLog([`Starting speaker naming for ${meeting.name}.`]);
+    setEngineBarValue(null);
+
+    try {
+      const transcript = await repo.loadArtifact<Transcript>(
+        meetingId,
+        'transcript',
+      );
+      const turns = await repo.loadArtifact<SpeakerTurn[]>(
+        meetingId,
+        'diarization',
+      );
+      if (transcript === null || turns === null) {
+        throw new Error('Transcript or diarization artifact missing.');
+      }
+
+      const audioFile = await repo.loadRecording(meetingId);
+      const samples = await decodeAudioBlobToMonoFloat32(
+        audioFile,
+        WHISPER_SAMPLE_RATE,
+        appendEngineLog,
+      );
+
+      const worker = getEngineWorker();
+      const requestId = ++engineRequestIdRef.current;
+
+      const names = await new Promise<Record<string, string>>(
+        (resolve, reject) => {
+          const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
+            const msg = event.data;
+            if (msg.id !== requestId) return;
+            if (handleWorkerUpdate(msg)) return;
+            if (msg.type !== 'result') return;
+            worker.removeEventListener('message', handleMessage);
+            if (msg.ok) {
+              if (msg.mode !== 'speaker-naming') {
+                reject(new Error('Worker returned an unexpected result.'));
+                return;
+              }
+              resolve(msg.names);
+            } else {
+              reject(new Error(msg.error));
+            }
+          };
+
+          worker.addEventListener('message', handleMessage);
+          const request: EngineWorkerRequest = {
+            id: requestId,
+            mode: 'speaker-naming',
+            fileName: meeting.name,
+            audio: samples,
+            useWebGpu: webGpuSupport === 'supported',
+            transcript,
+            diarization: turns,
+          };
+          worker.postMessage(request, [samples.buffer]);
+        },
+      );
+
+      await repo.saveArtifact(meetingId, 'speaker-names', names);
+      await refreshMeetings(repo);
+      setEngineStatus('idle');
+      setEngineMessage(`Speaker naming completed for ${meeting.name}.`);
+    } catch (error) {
+      setEngineStatus('error');
+      setEngineMessage(
+        error instanceof Error ? error.message : 'Speaker naming failed.',
       );
     }
   }
@@ -1633,67 +2062,52 @@ export function App() {
           <strong>Local meeting engine</strong>
         </div>
         <nav className={styles.nav} aria-label="Test app sections">
-          {[
-            ['models', 'Models', `${activeModelCount}/4 active`],
-            ['recordings', 'Recordings', `${files.length} saved`],
-            ['transcription', 'Transcription', engineStatus],
-            ['diarization', 'Diarization', engineStatus],
-            ['engine', 'Engine', engineStatus],
-          ].map(([page, label, detail]) => (
-            <button
+          {(
+            [
+              ['models', 'Models', `${activeModelCount}/4 active`],
+              ['meetings', 'Meetings', `${meetings.length} saved`],
+              ['transcription', 'Transcription', engineStatus],
+              ['diarization', 'Diarization', engineStatus],
+              ['engine', 'Engine', engineStatus],
+            ] as const
+          ).map(([page, label, detail]) => (
+            <NavLink
               key={page}
-              type="button"
+              to={PAGE_PATHS[page]}
               data-active={activePage === page}
-              onClick={() => setActivePage(page as AppPage)}
             >
               <span>{label}</span>
               <small>{detail}</small>
-            </button>
+            </NavLink>
           ))}
         </nav>
       </aside>
 
       <section className={styles.workspace}>
         <header className={styles.hero}>
-          <p className={styles.eyebrow}>Browser-only test harness</p>
           <h1>
             {activePage === 'models'
-              ? 'Prepare local models'
-              : activePage === 'recordings'
-                ? 'Capture meeting audio'
+              ? 'Models'
+              : activePage === 'meetings'
+                ? 'Meetings'
                 : activePage === 'transcription'
-                  ? 'Run transcription only'
+                  ? 'Transcription'
                   : activePage === 'diarization'
-                    ? 'Run diarization only'
-                    : 'Run the engine pipeline'}
+                    ? 'Diarization'
+                    : 'Engine'}
           </h1>
           <p>
             {activePage === 'models'
-              ? 'Download model files and choose the active version in OPFS before processing meetings.'
-              : activePage === 'recordings'
-                ? 'Record microphone audio directly into OPFS and keep a small local library for engine testing.'
+              ? 'Download and activate the local Whisper, Pyannote, and Gemma models.'
+              : activePage === 'meetings'
+                ? 'Capture, transcribe, and review meetings stored locally in OPFS.'
                 : activePage === 'transcription'
-                  ? 'Select a saved recording and run just the Whisper transcription engine with live segment updates.'
+                  ? 'Run Whisper transcription on a saved meeting.'
                   : activePage === 'diarization'
-                    ? 'Select a saved recording and run just the Pyannote speaker diarization engine to inspect raw speaker turns.'
-                    : 'Select a saved recording and run transcription, diarization, and speaker naming orchestration.'}
+                    ? 'Run Pyannote speaker diarization on a saved meeting.'
+                    : 'Run the full transcription, diarization, and speaker-naming pipeline.'}
           </p>
         </header>
-
-        <div className={styles.statsGrid}>
-          <article>
-            <span>Recorder</span>
-            <strong data-state={status}>{status}</strong>
-          </article>
-          <article>
-            <span>Active models</span>
-            <strong>{activeModelCount}/4</strong>
-          </article>
-          <article>
-            <span>Recordings</span>
-            <strong>{files.length}</strong>
-          </article>
-        </div>
 
         {activePage === 'models' ? (
           <ModelsPage
@@ -1758,21 +2172,78 @@ export function App() {
           />
         ) : null}
 
-        {activePage === 'recordings' ? (
-          <RecordingsPage
-            status={status}
+        {activePage === 'meetings' && viewingMeetingId !== null
+          ? (() => {
+              const viewedMeeting = meetings.find(
+                (meeting) => meeting.id === viewingMeetingId,
+              );
+
+              if (viewedMeeting === undefined) {
+                return (
+                  <section className={styles.panel}>
+                    <p className={styles.empty}>Meeting not found.</p>
+                    <div className={styles.actions}>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/meetings')}
+                      >
+                        Back to meetings
+                      </button>
+                    </div>
+                  </section>
+                );
+              }
+
+              return (
+                <MeetingDetailPage
+                  meeting={viewedMeeting}
+                  meetingUrl={meetingUrls[viewedMeeting.id]}
+                  isRecording={recordingMeetingId === viewedMeeting.id}
+                  status={status}
+                  engineStatus={engineStatus}
+                  engineMessage={engineMessage}
+                  loadArtifact={loadMeetingArtifact}
+                  saveArtifact={saveMeetingArtifact}
+                  onUpdateMeeting={(id, patch) =>
+                    void handleUpdateMeeting(id, patch)
+                  }
+                  onStartRecording={() =>
+                    void handleStartRecording(viewedMeeting.id)
+                  }
+                  onStopRecording={() => void handleStopRecording()}
+                  onCancelRecording={handleCancelRecording}
+                  onUploadRecording={(file) =>
+                    void handleUploadRecording(viewedMeeting.id, file)
+                  }
+                  onDeleteMeeting={() =>
+                    void handleDeleteMeeting(viewedMeeting)
+                  }
+                  onRunTranscript={() =>
+                    void handleRunTranscription(viewedMeeting.id)
+                  }
+                  onRunDiarization={() =>
+                    void handleRunDiarization(viewedMeeting.id)
+                  }
+                  onRunWordSync={() => void handleRunWordSync(viewedMeeting.id)}
+                  onRunSpeakerNaming={() =>
+                    void handleRunSpeakerNaming(viewedMeeting.id)
+                  }
+                  onBack={() => navigate('/meetings')}
+                  formatBytes={formatBytes}
+                  formatDate={formatDate}
+                  formatTimestamp={formatTimestamp}
+                />
+              );
+            })()
+          : null}
+
+        {activePage === 'meetings' && viewingMeetingId === null ? (
+          <MeetingsPage
+            meetings={meetings}
             message={message}
-            files={files}
-            lastRecording={lastRecording}
-            onUploadRecordings={(uploadedFiles) =>
-              void handleUploadRecordings(uploadedFiles)
-            }
-            onStartRecording={handleStartRecording}
-            onStopRecording={handleStopRecording}
-            onCancelRecording={handleCancelRecording}
-            onRefreshFiles={() => void refreshFiles()}
-            onDeleteRecording={(file) => void handleDeleteRecording(file)}
-            formatBytes={formatBytes}
+            isCreating={creatingMeeting}
+            onCreateMeeting={() => void handleCreateMeeting()}
+            onOpenMeeting={(meeting) => navigate(`/meetings/${meeting.id}`)}
             formatDate={formatDate}
           />
         ) : null}
@@ -1783,14 +2254,14 @@ export function App() {
             engineMessage={engineMessage}
             webGpuSupport={webGpuSupport}
             engineProgress={engineProgress}
-            selectedAudioName={selectedAudioName}
-            files={files}
+            selectedMeetingId={selectedMeetingId}
+            meetings={meetingOptions}
             transcriptionResult={transcriptionResult}
             engineLog={engineLog}
             engineBarValue={engineBarValue}
             liveTranscriptSegments={liveTranscriptSegments}
             activeWhisper={getActiveModelVersion('whisper')}
-            onSelectedAudioNameChange={setSelectedAudioName}
+            onSelectedMeetingIdChange={setSelectedMeetingId}
             onRunTranscription={() => void handleRunTranscription()}
             getWebGpuSupportLabel={getWebGpuSupportLabel}
             getModelVersionTitle={getModelVersionTitle}
@@ -1803,14 +2274,14 @@ export function App() {
             engineMessage={engineMessage}
             engineProgress={engineProgress}
             engineBarValue={engineBarValue}
-            selectedAudioName={selectedAudioName}
-            files={files}
+            selectedMeetingId={selectedMeetingId}
+            meetings={meetingOptions}
             numSpeakersHint={numSpeakersHint}
             diarizationResult={diarizationResult}
             engineLog={engineLog}
             engineLogRef={engineLogRef}
             activePyannote={getActiveModelVersion('pyannote')}
-            onSelectedAudioNameChange={setSelectedAudioName}
+            onSelectedMeetingIdChange={setSelectedMeetingId}
             onNumSpeakersHintChange={setNumSpeakersHint}
             onRunDiarization={() => void handleRunDiarization()}
             getModelVersionTitle={getModelVersionTitle}
@@ -1824,15 +2295,15 @@ export function App() {
             engineMessage={engineMessage}
             webGpuSupport={webGpuSupport}
             engineProgress={engineProgress}
-            selectedAudioName={selectedAudioName}
-            files={files}
+            selectedMeetingId={selectedMeetingId}
+            meetings={meetingOptions}
             meetingNotes={meetingNotes}
             engineLog={engineLog}
             engineBarValue={engineBarValue}
             liveTranscriptSegments={liveTranscriptSegments}
             numSpeakersHint={numSpeakersHint}
             modelTargets={MODEL_DOWNLOAD_TARGETS}
-            onSelectedAudioNameChange={setSelectedAudioName}
+            onSelectedMeetingIdChange={setSelectedMeetingId}
             onNumSpeakersHintChange={setNumSpeakersHint}
             onRunEngine={() => void handleRunEngine()}
             getWebGpuSupportLabel={getWebGpuSupportLabel}
@@ -1861,7 +2332,7 @@ export function App() {
                   {engineDialogMode === 'transcription'
                     ? 'Transcribing'
                     : 'Processing'}{' '}
-                  {selectedAudioName}
+                  {meetings.find((m) => m.id === selectedMeetingId)?.name ?? ''}
                 </h2>
               </div>
               <span data-state={engineStatus}>{engineStatus}</span>

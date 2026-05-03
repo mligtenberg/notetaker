@@ -1,6 +1,6 @@
 export class FileSystem {
-  async getAudioFilesDir(): Promise<FileSystemDirectoryHandle> {
-    return this.#getDirectory('audio-files');
+  async getMeetingsDir(): Promise<FileSystemDirectoryHandle> {
+    return this.#getDirectory('meetings');
   }
 
   async getModelsDir(): Promise<FileSystemDirectoryHandle> {

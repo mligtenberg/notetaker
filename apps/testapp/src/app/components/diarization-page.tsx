@@ -1,29 +1,38 @@
 import type { ChangeEvent, Dispatch, RefObject, SetStateAction } from 'react';
-import type { EngineProgressEvent, EngineStage, SpeakerTurn } from '@notetaker/engine';
+import type {
+  EngineProgressEvent,
+  EngineStage,
+  SpeakerTurn,
+} from '@notetaker/engine';
 import type { ModelVersionManifestEntry } from '@notetaker/model-manager';
 import styles from '../app.module.css';
 import { DebugLogPanel } from './debug-log-panel';
+import { ExportControls } from './export-controls';
 
 type EngineStatus = 'idle' | 'processing' | 'error';
 
-interface StoredAudioFile {
+interface MeetingOption {
+  id: string;
   name: string;
-  updatedAt: number;
+  date: string;
 }
 
 interface DiarizationPageProps {
   engineStatus: EngineStatus;
   engineMessage: string;
-  engineProgress: Record<EngineStage, EngineProgressEvent['status'] | undefined>;
+  engineProgress: Record<
+    EngineStage,
+    EngineProgressEvent['status'] | undefined
+  >;
   engineBarValue: number | null;
-  selectedAudioName: string;
-  files: StoredAudioFile[];
+  selectedMeetingId: string;
+  meetings: MeetingOption[];
   numSpeakersHint: number | null;
   diarizationResult: SpeakerTurn[] | null;
   engineLog: string[];
   engineLogRef: RefObject<HTMLDivElement | null>;
   activePyannote: ModelVersionManifestEntry | undefined;
-  onSelectedAudioNameChange: (name: string) => void;
+  onSelectedMeetingIdChange: (id: string) => void;
   onNumSpeakersHintChange: Dispatch<SetStateAction<number | null>>;
   onRunDiarization: () => void;
   getModelVersionTitle: (version: ModelVersionManifestEntry) => string;
@@ -35,14 +44,14 @@ export function DiarizationPage({
   engineMessage,
   engineProgress,
   engineBarValue,
-  selectedAudioName,
-  files,
+  selectedMeetingId,
+  meetings,
   numSpeakersHint,
   diarizationResult,
   engineLog,
   engineLogRef,
   activePyannote,
-  onSelectedAudioNameChange,
+  onSelectedMeetingIdChange,
   onNumSpeakersHintChange,
   onRunDiarization,
   getModelVersionTitle,
@@ -101,7 +110,9 @@ export function DiarizationPage({
               engineBarValue === null && engineStatus === 'processing'
             }
             style={
-              engineBarValue !== null ? { width: `${engineBarValue}%` } : undefined
+              engineBarValue !== null
+                ? { width: `${engineBarValue}%` }
+                : undefined
             }
           />
         </div>
@@ -109,16 +120,16 @@ export function DiarizationPage({
 
       <div className={styles.engineControls}>
         <select
-          value={selectedAudioName}
+          value={selectedMeetingId}
           onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-            onSelectedAudioNameChange(event.target.value)
+            onSelectedMeetingIdChange(event.target.value)
           }
-          disabled={files.length === 0 || engineStatus === 'processing'}
+          disabled={meetings.length === 0 || engineStatus === 'processing'}
         >
-          <option value="">Select recording</option>
-          {files.map((file) => (
-            <option key={`${file.name}-${file.updatedAt}`} value={file.name}>
-              {file.name}
+          <option value="">Select meeting</option>
+          {meetings.map((meeting) => (
+            <option key={meeting.id} value={meeting.id}>
+              {meeting.name} ({meeting.date})
             </option>
           ))}
         </select>
@@ -126,26 +137,38 @@ export function DiarizationPage({
           type="button"
           onClick={onRunDiarization}
           disabled={
-            selectedAudioName.length === 0 || engineStatus === 'processing'
+            selectedMeetingId.length === 0 || engineStatus === 'processing'
           }
         >
           Diarize Only
         </button>
       </div>
 
-      <DebugLogPanel lines={engineLog} emptyText="Waiting for output..." logRef={engineLogRef} />
+      <DebugLogPanel
+        lines={engineLog}
+        emptyText="Waiting for output..."
+        logRef={engineLogRef}
+      />
 
       {diarizationResult !== null ? (
         <div className={styles.transcriptResult}>
-          <h3>
-            Speaker turns - {[...new Set(diarizationResult.map((t) => t.speaker))].length}{' '}
-            speaker
-            {[...new Set(diarizationResult.map((t) => t.speaker))].length === 1
-              ? ''
-              : 's'}
-            , {diarizationResult.length} turn
-            {diarizationResult.length === 1 ? '' : 's'}
-          </h3>
+          <div className={styles.resultHeader}>
+            <h3>
+              Speaker turns -{' '}
+              {[...new Set(diarizationResult.map((t) => t.speaker))].length}{' '}
+              speaker
+              {[...new Set(diarizationResult.map((t) => t.speaker))].length ===
+              1
+                ? ''
+                : 's'}
+              , {diarizationResult.length} turn
+              {diarizationResult.length === 1 ? '' : 's'}
+            </h3>
+            <ExportControls
+              json={diarizationResult}
+              jsonFileName="diarization.json"
+            />
+          </div>
           <ul>
             {diarizationResult.map((turn, index) => (
               <li key={`${turn.startSeconds}-${index}`}>

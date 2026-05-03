@@ -35,9 +35,11 @@ type TensorLike = {
   dims: number[];
 };
 
-const DIARIZATION_CHUNK_SECONDS = 2;
+const DIARIZATION_CHUNK_SECONDS = 60;
 const DIARIZATION_MIN_CHUNK_SECONDS = 0.25;
-const DIARIZATION_OVERLAP_SECONDS = 0.2;
+const DIARIZATION_OVERLAP_SECONDS = 30;
+const DIARIZATION_MIN_TURN_SECONDS = 1.25;
+const DIARIZATION_SMOOTHING_GAP_SECONDS = 0.75;
 const ALIGNMENT_CHUNK_SECONDS = 10;
 const SPEAKER_NAMING_SEGMENT_CHUNK_SIZE = 50;
 const SPEAKER_NAMING_SEGMENT_CHUNK_OVERLAP = 3;
@@ -45,6 +47,11 @@ const SPEAKER_NAMING_SEGMENT_CHUNK_OVERLAP = 3;
 type DiarizationOptions = {
   speakerCountHint?: number | null;
   debug?: (line: string) => void;
+};
+
+type DiarizationStitchingState = {
+  speakerIndex: number;
+  turns: SpeakerTurn[];
 };
 
 type TranscriptionChunk = {
@@ -113,7 +120,7 @@ export class Engine {
     );
 
     emit?.({ stage: 'speaker-naming', status: 'started' });
-    const speakerNames = new Map<string, string>//await this.#nameSpeakers(meeting, segments);
+    const speakerNames = new Map<string, string>(); //await this.#nameSpeakers(meeting, segments);
     emit?.({ stage: 'speaker-naming', status: 'completed' });
 
     return {
@@ -309,7 +316,10 @@ export class Engine {
       Math.floor(DIARIZATION_OVERLAP_SECONDS * sampleRate),
     );
     const stepSize = chunkSize - overlapSize;
-    const turns: SpeakerTurn[] = [];
+    const stitchingState: DiarizationStitchingState = {
+      speakerIndex: 0,
+      turns: [],
+    };
 
     options.debug?.(
       `[diarization] processing ${(audio.length / sampleRate).toFixed(2)}s audio in ${DIARIZATION_CHUNK_SECONDS}s chunk(s).`,
@@ -333,14 +343,23 @@ export class Engine {
         options.debug,
       );
 
-      turns.push(...chunkTurns);
+      this.#appendDiarizationChunkTurns(
+        stitchingState,
+        chunkTurns,
+        startSample,
+        endSample,
+        audio.length,
+        sampleRate,
+      );
 
       if (endSample === audio.length) {
         break;
       }
     }
 
-    return this.#mergeSpeakerTurns(turns);
+    return this.#smoothSpeakerTurns(
+      this.#mergeSpeakerTurns(stitchingState.turns),
+    );
   }
 
   async #diarizeAudioChunkSafely(
@@ -358,7 +377,6 @@ export class Engine {
       return await this.#diarizeAudioChunk(
         audio.subarray(startSample, endSample),
         startSample,
-        totalSamples,
         sampleRate,
         processor,
         model,
@@ -414,7 +432,6 @@ export class Engine {
   async #diarizeAudioChunk(
     chunk: Float32Array,
     chunkStartSample: number,
-    totalSamples: number,
     sampleRate: number,
     processor: any,
     model: any,
@@ -435,15 +452,6 @@ export class Engine {
             speakerCountHint,
           );
     const chunkStartSeconds = chunkStartSample / sampleRate;
-    const chunkEndSeconds = (chunkStartSample + chunk.length) / sampleRate;
-    const trimStartSeconds =
-      chunkStartSample === 0
-        ? chunkStartSeconds
-        : chunkStartSeconds + DIARIZATION_OVERLAP_SECONDS / 2;
-    const trimEndSeconds =
-      chunkStartSample + chunk.length >= totalSamples
-        ? chunkEndSeconds
-        : chunkEndSeconds - DIARIZATION_OVERLAP_SECONDS / 2;
 
     const segments = (result[0] ?? []) as Array<{
       id: string | number;
@@ -453,14 +461,8 @@ export class Engine {
 
     return segments
       .map((segment): SpeakerTurn | null => {
-        const startSeconds = Math.max(
-          trimStartSeconds,
-          chunkStartSeconds + segment.start,
-        );
-        const endSeconds = Math.min(
-          trimEndSeconds,
-          chunkStartSeconds + segment.end,
-        );
+        const startSeconds = chunkStartSeconds + segment.start;
+        const endSeconds = chunkStartSeconds + segment.end;
 
         if (endSeconds <= startSeconds) {
           return null;
@@ -474,6 +476,112 @@ export class Engine {
         };
       })
       .filter((turn): turn is SpeakerTurn => turn !== null);
+  }
+
+  #appendDiarizationChunkTurns(
+    state: DiarizationStitchingState,
+    chunkTurns: SpeakerTurn[],
+    startSample: number,
+    endSample: number,
+    totalSamples: number,
+    sampleRate: number,
+  ): void {
+    const chunkStartSeconds = startSample / sampleRate;
+    const chunkEndSeconds = endSample / sampleRate;
+    const trimStartSeconds =
+      startSample === 0
+        ? chunkStartSeconds
+        : chunkStartSeconds + DIARIZATION_OVERLAP_SECONDS / 2;
+    const trimEndSeconds =
+      endSample >= totalSamples
+        ? chunkEndSeconds
+        : chunkEndSeconds - DIARIZATION_OVERLAP_SECONDS / 2;
+    const speakerMap = this.#mapChunkSpeakersToGlobalSpeakers(
+      chunkTurns,
+      state.turns,
+    );
+
+    for (const turn of chunkTurns) {
+      let speaker = speakerMap.get(turn.speaker);
+
+      if (speaker === undefined) {
+        speaker = `SPEAKER_${String(state.speakerIndex).padStart(2, '0')}`;
+        state.speakerIndex += 1;
+        speakerMap.set(turn.speaker, speaker);
+      }
+
+      const startSeconds = Math.max(trimStartSeconds, turn.startSeconds);
+      const endSeconds = Math.min(trimEndSeconds, turn.endSeconds);
+
+      if (endSeconds <= startSeconds) {
+        continue;
+      }
+
+      state.turns.push({
+        ...turn,
+        speaker,
+        startSeconds,
+        endSeconds,
+      });
+    }
+  }
+
+  #mapChunkSpeakersToGlobalSpeakers(
+    chunkTurns: SpeakerTurn[],
+    previousTurns: SpeakerTurn[],
+  ): Map<string, string> {
+    const overlapBySpeakerPair = new Map<string, Map<string, number>>();
+    const claimedSpeakers = new Set<string>();
+
+    for (const chunkTurn of chunkTurns) {
+      for (const previousTurn of previousTurns) {
+        const overlapSeconds = Math.max(
+          0,
+          Math.min(chunkTurn.endSeconds, previousTurn.endSeconds) -
+            Math.max(chunkTurn.startSeconds, previousTurn.startSeconds),
+        );
+
+        if (overlapSeconds <= 0) {
+          continue;
+        }
+
+        const overlapsForChunkSpeaker =
+          overlapBySpeakerPair.get(chunkTurn.speaker) ??
+          new Map<string, number>();
+
+        overlapsForChunkSpeaker.set(
+          previousTurn.speaker,
+          (overlapsForChunkSpeaker.get(previousTurn.speaker) ?? 0) +
+            overlapSeconds,
+        );
+        overlapBySpeakerPair.set(chunkTurn.speaker, overlapsForChunkSpeaker);
+      }
+    }
+
+    const sortedMatches = [...overlapBySpeakerPair.entries()]
+      .flatMap(([chunkSpeaker, overlaps]) =>
+        [...overlaps.entries()].map(([speaker, overlapSeconds]) => ({
+          chunkSpeaker,
+          speaker,
+          overlapSeconds,
+        })),
+      )
+      .sort((first, second) => second.overlapSeconds - first.overlapSeconds);
+    const speakerMap = new Map<string, string>();
+
+    for (const match of sortedMatches) {
+      if (
+        speakerMap.has(match.chunkSpeaker) ||
+        claimedSpeakers.has(match.speaker)
+      ) {
+        continue;
+      }
+
+      speakerMap.set(match.chunkSpeaker, match.speaker);
+      claimedSpeakers.add(match.speaker);
+    }
+
+    return speakerMap;
   }
 
   #mergeSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
@@ -504,6 +612,55 @@ export class Engine {
     return mergedTurns;
   }
 
+  #smoothSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
+    const sortedTurns = [...turns].sort(
+      (first, second) => first.startSeconds - second.startSeconds,
+    );
+    const smoothedTurns: SpeakerTurn[] = [];
+
+    for (let index = 0; index < sortedTurns.length; index += 1) {
+      const turn = sortedTurns[index];
+      const previousTurn = smoothedTurns.at(-1);
+      const nextTurn = sortedTurns[index + 1];
+      const durationSeconds = turn.endSeconds - turn.startSeconds;
+
+      if (
+        durationSeconds < DIARIZATION_MIN_TURN_SECONDS &&
+        previousTurn !== undefined &&
+        nextTurn !== undefined &&
+        previousTurn.speaker === nextTurn.speaker &&
+        turn.startSeconds - previousTurn.endSeconds <=
+          DIARIZATION_SMOOTHING_GAP_SECONDS &&
+        nextTurn.startSeconds - turn.endSeconds <=
+          DIARIZATION_SMOOTHING_GAP_SECONDS
+      ) {
+        previousTurn.endSeconds = Math.max(
+          previousTurn.endSeconds,
+          nextTurn.endSeconds,
+        );
+        index += 1;
+        continue;
+      }
+
+      if (
+        durationSeconds < DIARIZATION_MIN_TURN_SECONDS &&
+        previousTurn !== undefined &&
+        turn.startSeconds - previousTurn.endSeconds <=
+          DIARIZATION_SMOOTHING_GAP_SECONDS
+      ) {
+        previousTurn.endSeconds = Math.max(
+          previousTurn.endSeconds,
+          turn.endSeconds,
+        );
+        continue;
+      }
+
+      smoothedTurns.push({ ...turn });
+    }
+
+    return this.#mergeSpeakerTurns(smoothedTurns);
+  }
+
   #sanitizeAudioSamples(audio: Float32Array): Float32Array {
     let needsCopy = false;
 
@@ -531,6 +688,41 @@ export class Engine {
     }
 
     return sanitized;
+  }
+
+  #resampleAudioIfNeeded(
+    audio: Float32Array,
+    sourceSampleRate: number | undefined,
+    targetSampleRate: number,
+  ): Float32Array {
+    if (
+      sourceSampleRate === undefined ||
+      !Number.isFinite(sourceSampleRate) ||
+      sourceSampleRate <= 0 ||
+      Math.round(sourceSampleRate) === Math.round(targetSampleRate)
+    ) {
+      return audio;
+    }
+
+    const targetLength = Math.max(
+      1,
+      Math.round((audio.length * targetSampleRate) / sourceSampleRate),
+    );
+    const resampled = new Float32Array(targetLength);
+    const ratio = sourceSampleRate / targetSampleRate;
+
+    for (let index = 0; index < targetLength; index += 1) {
+      const sourceIndex = index * ratio;
+      const lowerIndex = Math.floor(sourceIndex);
+      const upperIndex = Math.min(audio.length - 1, lowerIndex + 1);
+      const weight = sourceIndex - lowerIndex;
+      const lowerSample = audio[lowerIndex] ?? 0;
+      const upperSample = audio[upperIndex] ?? lowerSample;
+
+      resampled[index] = lowerSample + (upperSample - lowerSample) * weight;
+    }
+
+    return resampled;
   }
 
   #normalizeSpeakerCountHint(value: number | null | undefined): number | null {
@@ -615,6 +807,7 @@ export class Engine {
     transcript: string,
     meetingAudio: MeetingAudio,
     debug?: (line: string) => void,
+    inputSampleRate?: number,
   ): Promise<TimestampedWord[]> {
     const activeModel = await this.#requireActiveModel('wav2vec2');
     const transcriptWords = transcript.match(/\S+/g) ?? [];
@@ -647,13 +840,22 @@ export class Engine {
     })) as any;
     const sampleRate =
       processor.feature_extractor?.config.sampling_rate ?? 16_000;
+    debug?.(
+      `[alignment] model sampleRate=${sampleRate}; inputSampleRate=${inputSampleRate ?? 'unknown'}.`,
+    );
     const readAudio = read_audio as unknown as (
       input: unknown,
       sampleRate: number,
     ) => Promise<Float32Array>;
     const rawAudio = await this.#withAudioInput(meetingAudio, (audioInput) =>
       audioInput instanceof Float32Array
-        ? Promise.resolve(audioInput)
+        ? Promise.resolve(
+            this.#resampleAudioIfNeeded(
+              audioInput,
+              inputSampleRate,
+              sampleRate,
+            ),
+          )
         : readAudio(audioInput, sampleRate),
     );
     const audio = this.#sanitizeAudioSamples(rawAudio);
@@ -661,6 +863,10 @@ export class Engine {
     if (audio.length === 0) {
       return [];
     }
+
+    debug?.(
+      `[alignment] audio frames=${audio.length}; duration=${(audio.length / sampleRate).toFixed(3)}s.`,
+    );
 
     const chunkSize = Math.max(
       1,
@@ -971,7 +1177,7 @@ export class Engine {
     return bestTurn?.speaker ?? 'SPEAKER_0';
   }
 
-  async #nameSpeakers(
+  async nameSpeakers(
     meeting: Meeting,
     segments: Omit<TranscriptSegment, 'speakerName'>[],
   ): Promise<Map<string, string>> {
@@ -1018,7 +1224,12 @@ export class Engine {
         }
 
         const result = (await pipeline(
-          this.#createSpeakerNamingPrompt(meeting, chunk, chunkSpeakers, parsed),
+          this.#createSpeakerNamingPrompt(
+            meeting,
+            chunk,
+            chunkSpeakers,
+            parsed,
+          ),
           {
             max_new_tokens: 256,
             return_full_text: false,
@@ -1027,7 +1238,7 @@ export class Engine {
         const text = this.#getGeneratedText(result);
         const chunkParsed = this.#parseSpeakerNames(text);
 
-        console.log("names", chunkParsed)
+        console.log('names', chunkParsed);
         for (const [speaker, name] of chunkParsed) {
           if (!parsed.has(speaker)) {
             parsed.set(speaker, name);
