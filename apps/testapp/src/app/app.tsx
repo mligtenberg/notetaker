@@ -406,7 +406,7 @@ async function decodeAudioBlobToMonoFloat32(
   );
 
   if (blob.size === 0) {
-    throw new Error('Selected audio file is empty.');
+    throw new Error('Selected media file is empty.');
   }
 
   const arrayBuffer = await blob.arrayBuffer();
@@ -416,7 +416,13 @@ async function decodeAudioBlobToMonoFloat32(
   const decodeContext = new AudioContext();
 
   try {
-    const decoded = await decodeContext.decodeAudioData(arrayBuffer.slice(0));
+    const decoded = await decodeContext
+      .decodeAudioData(arrayBuffer.slice(0))
+      .catch((error: unknown) => {
+        throw new Error(
+          `Could not decode an audio track from this media file: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     onDebug?.(
       `[decode] decoded duration=${decoded.duration.toFixed(3)}s sampleRate=${decoded.sampleRate} channels=${decoded.numberOfChannels} frames=${decoded.length}`,
     );
@@ -629,7 +635,11 @@ async function downloadBlobWithProgress(
 
 function mimeTypeToExtension(mimeType: string): string {
   if (mimeType.includes('mp4')) {
-    return 'm4a';
+    return mimeType.startsWith('video/') ? 'mp4' : 'm4a';
+  }
+
+  if (mimeType.includes('quicktime')) {
+    return 'mov';
   }
 
   if (mimeType.includes('ogg')) {

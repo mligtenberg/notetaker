@@ -7,7 +7,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
-  type RefObject,
   type SetStateAction,
 } from 'react';
 import type { SpeakerTurn, Transcript } from '@notetaker/engine';
@@ -20,6 +19,7 @@ import { ExportControls } from './export-controls';
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
+type MediaElementRef = { current: HTMLMediaElement | null };
 
 interface TimestampedWord {
   word: string;
@@ -154,8 +154,8 @@ export function MeetingDetailPage({
   const [loggingAvailableTab, setLoggingAvailableTab] = useState<TabKey | null>(
     null,
   );
-  const diarizationAudioRef = useRef<HTMLAudioElement | null>(null);
-  const wordSyncAudioRef = useRef<HTMLAudioElement | null>(null);
+  const diarizationAudioRef = useRef<HTMLMediaElement | null>(null);
+  const wordSyncAudioRef = useRef<HTMLMediaElement | null>(null);
 
   useEffect(() => {
     setSpeakerNamesSaved(meeting.artifacts['speaker-names']);
@@ -290,6 +290,7 @@ export function MeetingDetailPage({
                 meetingName={meeting.name}
                 meetingUrl={meetingUrl}
                 audioRef={diarizationAudioRef}
+                recordingMimeType={meeting.recordingMimeType}
                 turns={turns}
                 setTurns={setTurns}
                 loadArtifact={loadArtifact}
@@ -330,6 +331,7 @@ export function MeetingDetailPage({
             meetingName={meeting.name}
             meetingUrl={meetingUrl}
             audioRef={wordSyncAudioRef}
+            recordingMimeType={meeting.recordingMimeType}
             present={meeting.artifacts['word-sync']}
             revision={artifactRevision}
             loadArtifact={loadArtifact}
@@ -598,7 +600,13 @@ function RecordingTab({
   return (
     <>
       {hasRecording && meetingUrl !== undefined ? (
-        <audio controls src={meetingUrl} />
+        <div className={styles.recordingPlayback}>
+          <RecordingMedia
+            mediaRef={null}
+            meetingUrl={meetingUrl}
+            mimeType={meeting.recordingMimeType}
+          />
+        </div>
       ) : (
         <p className={styles.empty}>No recording attached yet.</p>
       )}
@@ -633,11 +641,11 @@ function RecordingTab({
             </button>
             <label className={styles.uploadInline}>
               <span>
-                {hasRecording ? 'Replace via upload' : 'Upload audio'}
+                {hasRecording ? 'Replace via upload' : 'Upload audio/video'}
               </span>
               <input
                 type="file"
-                accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg"
+                accept="audio/*,video/*,.mp3,.m4a,.wav,.webm,.ogg,.mp4,.mov,.m4v"
                 onChange={handleUpload}
                 disabled={status === 'saving'}
               />
@@ -650,20 +658,57 @@ function RecordingTab({
 }
 
 interface RecordingPlaybackProps {
-  audioRef: RefObject<HTMLAudioElement | null>;
+  audioRef: MediaElementRef;
   meetingUrl: string | undefined;
+  mimeType: string | null;
 }
 
-function RecordingPlayback({ audioRef, meetingUrl }: RecordingPlaybackProps) {
+function RecordingPlayback({
+  audioRef,
+  meetingUrl,
+  mimeType,
+}: RecordingPlaybackProps) {
   if (meetingUrl === undefined) {
     return <p className={styles.empty}>No recording available for playback.</p>;
   }
 
   return (
     <div className={styles.recordingPlayback}>
-      <audio ref={audioRef} controls src={meetingUrl} />
+      <RecordingMedia
+        mediaRef={audioRef}
+        meetingUrl={meetingUrl}
+        mimeType={mimeType}
+      />
     </div>
   );
+}
+
+interface RecordingMediaProps {
+  mediaRef: MediaElementRef | null;
+  meetingUrl: string;
+  mimeType: string | null;
+}
+
+function RecordingMedia({
+  mediaRef,
+  meetingUrl,
+  mimeType,
+}: RecordingMediaProps) {
+  const assignRef = (element: HTMLMediaElement | null) => {
+    if (mediaRef !== null) {
+      mediaRef.current = element;
+    }
+  };
+
+  if (isVideoMimeType(mimeType)) {
+    return <video ref={assignRef} controls src={meetingUrl} />;
+  }
+
+  return <audio ref={assignRef} controls src={meetingUrl} />;
+}
+
+function isVideoMimeType(mimeType: string | null): boolean {
+  return mimeType?.startsWith('video/') ?? false;
 }
 
 interface TranscriptArtifactViewProps {
@@ -730,24 +775,25 @@ function LiveTranscriptPreview({
 }
 
 async function playRecordingFrom(
-  audioRef: RefObject<HTMLAudioElement | null>,
+  audioRef: MediaElementRef,
   startSeconds: number,
 ): Promise<void> {
-  const audio = audioRef.current;
+  const media = audioRef.current;
 
-  if (audio === null) {
+  if (media === null) {
     return;
   }
 
-  audio.currentTime = Math.max(0, startSeconds);
-  await audio.play();
+  media.currentTime = Math.max(0, startSeconds);
+  await media.play();
 }
 
 interface DiarizationArtifactViewProps {
   meetingId: string;
   meetingName: string;
   meetingUrl: string | undefined;
-  audioRef: RefObject<HTMLAudioElement | null>;
+  audioRef: MediaElementRef;
+  recordingMimeType: string | null;
   turns: SpeakerTurn[];
   setTurns: Dispatch<SetStateAction<SpeakerTurn[] | null>>;
   loadArtifact: <U>(
@@ -768,6 +814,7 @@ function DiarizationArtifactView({
   meetingName,
   meetingUrl,
   audioRef,
+  recordingMimeType,
   turns,
   setTurns,
   loadArtifact,
@@ -804,7 +851,11 @@ function DiarizationArtifactView({
 
   return (
     <div className={styles.transcriptResult}>
-      <RecordingPlayback audioRef={audioRef} meetingUrl={meetingUrl} />
+      <RecordingPlayback
+        audioRef={audioRef}
+        meetingUrl={meetingUrl}
+        mimeType={recordingMimeType}
+      />
       <div className={styles.resultHeader}>
         <h3>
           {speakers.length} speaker{speakers.length === 1 ? '' : 's'},{' '}
@@ -871,7 +922,8 @@ interface WordSyncArtifactTabProps {
   meetingId: string;
   meetingName: string;
   meetingUrl: string | undefined;
-  audioRef: RefObject<HTMLAudioElement | null>;
+  audioRef: MediaElementRef;
+  recordingMimeType: string | null;
   present: boolean;
   revision: number;
   loadArtifact: <U>(
@@ -892,6 +944,7 @@ function WordSyncArtifactTab({
   meetingName,
   meetingUrl,
   audioRef,
+  recordingMimeType,
   present,
   revision,
   loadArtifact,
@@ -978,7 +1031,11 @@ function WordSyncArtifactTab({
 
   return (
     <div className={styles.transcriptResult}>
-      <RecordingPlayback audioRef={audioRef} meetingUrl={meetingUrl} />
+      <RecordingPlayback
+        audioRef={audioRef}
+        meetingUrl={meetingUrl}
+        mimeType={recordingMimeType}
+      />
       <div className={styles.resultHeader}>
         <h3>
           {[...new Set(turns.map((turn) => turn.speaker))].length} speaker

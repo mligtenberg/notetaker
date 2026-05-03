@@ -954,8 +954,15 @@
   margin-bottom: 0.85rem;
 }
 
-.recordingPlayback audio {
+.recordingPlayback audio,
+.recordingPlayback video {
   width: 100%;
+}
+
+.recordingPlayback video {
+  background: #020617;
+  border-radius: 12px;
+  max-height: 28rem;
 }
 
 .transcriptResult li.playbackSegment {
