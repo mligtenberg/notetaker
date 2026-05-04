@@ -4,6 +4,7 @@ import {
   useState,
   type ChangeEvent,
   type Dispatch,
+  type RefObject,
   type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
@@ -36,11 +37,12 @@ interface SpeakerWordTurn {
 
 interface SpeakerContextMenuState {
   sourceSpeaker: string;
+  turnIndex?: number;
   x: number;
   y: number;
 }
 
-type SpeakerContextMenuMode = 'menu' | 'rename' | 'merge';
+type SpeakerContextMenuMode = 'menu' | 'rename' | 'merge' | 'edit';
 
 interface LiveTranscriptSegment {
   text: string;
@@ -52,6 +54,12 @@ interface WordAssignmentPopoverState {
   turnIndex: number;
   wordIndex: number;
   wordTimestampInMs: number;
+  x: number;
+  y: number;
+}
+
+interface TranscriptSegmentMenuState {
+  segmentIndex: number;
   x: number;
   y: number;
 }
@@ -100,6 +108,10 @@ interface MeetingDetailPageProps {
     kind: MeetingArtifactKind,
     data: T,
   ) => Promise<void>;
+  deleteArtifact: (
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ) => Promise<void>;
   onUpdateMeeting: (
     id: string,
     patch: Partial<{ name: string; date: string; participantCount: number }>,
@@ -131,6 +143,7 @@ export function MeetingDetailPage({
   liveTranscriptSegments,
   loadArtifact,
   saveArtifact,
+  deleteArtifact,
   onUpdateMeeting,
   onStartRecording,
   onStopRecording,
@@ -154,7 +167,9 @@ export function MeetingDetailPage({
   const [loggingAvailableTab, setLoggingAvailableTab] = useState<TabKey | null>(
     null,
   );
+  const recordingAudioRef = useRef<HTMLMediaElement | null>(null);
   const diarizationAudioRef = useRef<HTMLMediaElement | null>(null);
+  const transcriptAudioRef = useRef<HTMLMediaElement | null>(null);
   const wordSyncAudioRef = useRef<HTMLMediaElement | null>(null);
 
   useEffect(() => {
@@ -164,6 +179,34 @@ export function MeetingDetailPage({
   useEffect(() => {
     setLoggingAvailableTab(null);
   }, [meeting.id]);
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent): void {
+      if (event.key !== ' ' || isEditableTarget(event.target)) {
+        return;
+      }
+
+      const mediaRef = getActiveMediaRef(activeTab, {
+        recording: recordingAudioRef,
+        transcript: transcriptAudioRef,
+        diarization: diarizationAudioRef,
+        wordSync: wordSyncAudioRef,
+      });
+
+      if (mediaRef === null || mediaRef.current === null) {
+        return;
+      }
+
+      event.preventDefault();
+      void toggleRecordingPlayback(mediaRef.current);
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeTab]);
 
   const hasRecording = meeting.recordingFileName !== null;
   const hasTranscript = meeting.artifacts.transcript;
@@ -212,6 +255,7 @@ export function MeetingDetailPage({
         <RecordingTab
           meeting={meeting}
           meetingUrl={meetingUrl}
+          audioRef={recordingAudioRef}
           isRecording={isRecording}
           status={status}
           onStartRecording={onStartRecording}
@@ -251,10 +295,17 @@ export function MeetingDetailPage({
               present={meeting.artifacts.transcript}
               revision={artifactRevision}
               loadArtifact={loadArtifact}
-              render={(transcript) => (
+              render={(transcript, setTranscript) => (
                 <TranscriptArtifactView
+                  meetingId={meeting.id}
                   meetingName={meeting.name}
+                  meetingUrl={meetingUrl}
+                  audioRef={transcriptAudioRef}
+                  recordingMimeType={meeting.recordingMimeType}
                   transcript={transcript}
+                  setTranscript={setTranscript}
+                  saveArtifact={saveArtifact}
+                  deleteArtifact={deleteArtifact}
                   formatTimestamp={formatTimestamp}
                 />
               )}
@@ -545,11 +596,6 @@ function DetailsTab({
 
       <p className={styles.message}>Created {formatDate(meeting.createdAt)}</p>
 
-      <ExportControls
-        json={meeting}
-        jsonFileName={`${meeting.name}-details.json`}
-      />
-
       <div className={styles.actions}>
         <button
           type="button"
@@ -566,6 +612,7 @@ function DetailsTab({
 interface RecordingTabProps {
   meeting: StoredMeetingSummary;
   meetingUrl: string | undefined;
+  audioRef: MediaElementRef;
   isRecording: boolean;
   status: RecorderStatus;
   onStartRecording: () => void;
@@ -578,6 +625,7 @@ interface RecordingTabProps {
 function RecordingTab({
   meeting,
   meetingUrl,
+  audioRef,
   isRecording,
   status,
   onStartRecording,
@@ -602,7 +650,7 @@ function RecordingTab({
       {hasRecording && meetingUrl !== undefined ? (
         <div className={styles.recordingPlayback}>
           <RecordingMedia
-            mediaRef={null}
+            mediaRef={audioRef}
             meetingUrl={meetingUrl}
             mimeType={meeting.recordingMimeType}
           />
@@ -673,7 +721,9 @@ function RecordingPlayback({
   }
 
   return (
-    <div className={styles.recordingPlayback}>
+    <div
+      className={`${styles.recordingPlayback} ${styles.stickyRecordingPlayback}`}
+    >
       <RecordingMedia
         mediaRef={audioRef}
         meetingUrl={meetingUrl}
@@ -712,18 +762,67 @@ function isVideoMimeType(mimeType: string | null): boolean {
 }
 
 interface TranscriptArtifactViewProps {
+  meetingId: string;
   meetingName: string;
+  meetingUrl: string | undefined;
+  audioRef: MediaElementRef;
+  recordingMimeType: string | null;
   transcript: Transcript;
+  setTranscript: Dispatch<SetStateAction<Transcript | null>>;
+  saveArtifact: <U>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+    data: U,
+  ) => Promise<void>;
+  deleteArtifact: (
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ) => Promise<void>;
   formatTimestamp: (seconds: number) => string;
 }
 
 function TranscriptArtifactView({
+  meetingId,
   meetingName,
+  meetingUrl,
+  audioRef,
+  recordingMimeType,
   transcript,
+  setTranscript,
+  saveArtifact,
+  deleteArtifact,
   formatTimestamp,
 }: TranscriptArtifactViewProps) {
+  const [segmentMenu, setSegmentMenu] =
+    useState<TranscriptSegmentMenuState | null>(null);
+
+  async function handleEditSegment(
+    segmentIndex: number,
+    text: string,
+  ): Promise<void> {
+    const nextSegments = transcript.segments.map((segment, index) =>
+      index === segmentIndex ? { ...segment, text } : segment,
+    );
+    const nextTranscript = {
+      ...transcript,
+      text: nextSegments.map((segment) => segment.text).join(' '),
+      segments: nextSegments,
+    };
+
+    await saveArtifact(meetingId, 'transcript', nextTranscript);
+    await deleteArtifact(meetingId, 'word-sync');
+    await deleteArtifact(meetingId, 'speaker-names');
+    setTranscript(nextTranscript);
+    setSegmentMenu(null);
+  }
+
   return (
     <div className={styles.transcriptResult}>
+      <RecordingPlayback
+        audioRef={audioRef}
+        meetingUrl={meetingUrl}
+        mimeType={recordingMimeType}
+      />
       <div className={styles.resultHeader}>
         <h3>Transcript</h3>
         <ExportControls
@@ -735,12 +834,47 @@ function TranscriptArtifactView({
       </div>
       <ul>
         {transcript.segments.map((segment, index) => (
-          <li key={`${segment.startSeconds}-${index}`}>
-            <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
-            <span>{segment.text}</span>
+          <li
+            key={`${segment.startSeconds}-${index}`}
+            className={styles.playbackSegment}
+            tabIndex={0}
+            onContextMenu={(event) =>
+              openTranscriptSegmentMenu(event, index, setSegmentMenu)
+            }
+            onKeyDown={(event) => {
+              if (
+                event.key === 'ContextMenu' ||
+                (event.shiftKey && event.key === 'F10')
+              ) {
+                openTranscriptSegmentMenu(event, index, setSegmentMenu);
+              }
+            }}
+          >
+            <div>
+              <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
+              <span>{segment.text}</span>
+            </div>
+            <button
+              type="button"
+              className={styles.segmentPlayButton}
+              aria-label={`Play transcript segment from ${formatTimestamp(segment.startSeconds)}`}
+              onClick={() =>
+                void playRecordingFrom(audioRef, segment.startSeconds)
+              }
+            >
+              ▶
+            </button>
           </li>
         ))}
       </ul>
+      {segmentMenu !== null ? (
+        <TranscriptSegmentContextMenu
+          state={segmentMenu}
+          segmentText={transcript.segments[segmentMenu.segmentIndex]?.text ?? ''}
+          onEdit={handleEditSegment}
+          onClose={() => setSegmentMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -788,6 +922,56 @@ async function playRecordingFrom(
   await media.play();
 }
 
+async function toggleRecordingPlayback(media: HTMLMediaElement): Promise<void> {
+  if (media.paused) {
+    await media.play();
+    return;
+  }
+
+  media.pause();
+}
+
+function getActiveMediaRef(
+  activeTab: TabKey,
+  refs: {
+    recording: MediaElementRef;
+    transcript: MediaElementRef;
+    diarization: MediaElementRef;
+    wordSync: MediaElementRef;
+  },
+): MediaElementRef | null {
+  if (activeTab === 'recording') {
+    return refs.recording;
+  }
+
+  if (activeTab === 'transcript') {
+    return refs.transcript;
+  }
+
+  if (activeTab === 'diarization') {
+    return refs.diarization;
+  }
+
+  if (activeTab === 'word-sync') {
+    return refs.wordSync;
+  }
+
+  return null;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  );
+}
+
 interface DiarizationArtifactViewProps {
   meetingId: string;
   meetingName: string;
@@ -825,6 +1009,22 @@ function DiarizationArtifactView({
   const [speakerMenu, setSpeakerMenu] =
     useState<SpeakerContextMenuState | null>(null);
   const speakers = collectSpeakers(turns);
+  const [speakerNames, setSpeakerNames] = useSpeakerNames(
+    meetingId,
+    speakers,
+    loadArtifact,
+  );
+
+  useEffect(() => {
+    const normalizedTurns = renumberSpeakersSequentially(turns);
+
+    if (speakerTurnsEqual(turns, normalizedTurns)) {
+      return;
+    }
+
+    setTurns(normalizedTurns);
+    void saveArtifact(meetingId, 'diarization', normalizedTurns);
+  }, [meetingId, saveArtifact, setTurns, turns]);
 
   async function handleMerge(
     sourceSpeaker: string,
@@ -845,6 +1045,7 @@ function DiarizationArtifactView({
       loadArtifact,
       saveArtifact,
     );
+    setSpeakerNames((current) => ({ ...current, [speaker]: name }));
     onSpeakerNamesSaved();
     setSpeakerMenu(null);
   }
@@ -883,9 +1084,9 @@ function DiarizationArtifactView({
                 openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu);
               }
             }}
-          >
+            >
             <div>
-              <strong>{turn.speaker}</strong>
+              <strong>{displaySpeakerName(turn.speaker, speakerNames)}</strong>
               <span>
                 {formatTimestamp(turn.startSeconds)} to{' '}
                 {formatTimestamp(turn.endSeconds)} (
@@ -895,7 +1096,7 @@ function DiarizationArtifactView({
             <button
               type="button"
               className={styles.segmentPlayButton}
-              aria-label={`Play ${turn.speaker} from ${formatTimestamp(turn.startSeconds)}`}
+              aria-label={`Play ${displaySpeakerName(turn.speaker, speakerNames)} from ${formatTimestamp(turn.startSeconds)}`}
               onClick={() =>
                 void playRecordingFrom(audioRef, turn.startSeconds)
               }
@@ -908,6 +1109,7 @@ function DiarizationArtifactView({
       {speakerMenu !== null ? (
         <SpeakerContextMenu
           speakers={speakers}
+          speakerNames={speakerNames}
           state={speakerMenu}
           onRename={handleRename}
           onMerge={handleMerge}
@@ -955,13 +1157,52 @@ function WordSyncArtifactTab({
   const [words, setWords] = useState<TimestampedWord[] | null>(null);
   const [diarization, setDiarization] = useState<SpeakerTurn[] | null>(null);
   const [turns, setTurns] = useState<SpeakerWordTurn[] | null>(null);
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
   const [speakerMenu, setSpeakerMenu] =
     useState<SpeakerContextMenuState | null>(null);
   const [wordAssignmentPopover, setWordAssignmentPopover] =
     useState<WordAssignmentPopoverState | null>(null);
+  const activeWordRef = useRef<HTMLSpanElement | null>(null);
   const [wordCount, setWordCount] = useState(0);
+  const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const activeWordTimestampInMs =
+    words !== null ? getActiveWordTimestampInMs(words, currentPlaybackTime) : null;
+
+  useEffect(() => {
+    const media = audioRef.current;
+
+    if (media === null) {
+      return;
+    }
+
+    const mediaElement = media;
+
+    function handleTimeUpdate(): void {
+      setCurrentPlaybackTime(mediaElement.currentTime);
+    }
+
+    function handleSeeked(): void {
+      setCurrentPlaybackTime(mediaElement.currentTime);
+    }
+
+    handleTimeUpdate();
+    mediaElement.addEventListener('timeupdate', handleTimeUpdate);
+    mediaElement.addEventListener('seeked', handleSeeked);
+
+    return () => {
+      mediaElement.removeEventListener('timeupdate', handleTimeUpdate);
+      mediaElement.removeEventListener('seeked', handleSeeked);
+    };
+  }, [audioRef, loading, meetingUrl, present, turns]);
+
+  useEffect(() => {
+    activeWordRef.current?.scrollIntoView({
+      block: 'center',
+      behavior: 'smooth',
+    });
+  }, [activeWordTimestampInMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -981,8 +1222,9 @@ function WordSyncArtifactTab({
     Promise.all([
       loadArtifact<TimestampedWord[]>(meetingId, 'word-sync'),
       loadArtifact<SpeakerTurn[]>(meetingId, 'diarization'),
+      loadArtifact<Record<string, string>>(meetingId, 'speaker-names'),
     ])
-      .then(([words, diarization]) => {
+      .then(([words, diarization, speakerNames]) => {
         if (cancelled) {
           return;
         }
@@ -994,6 +1236,7 @@ function WordSyncArtifactTab({
         setWords(words);
         setDiarization(diarization);
         setTurns(buildSpeakerWordTurns(words, diarization));
+        setSpeakerNames(speakerNames ?? {});
         setWordCount(words.length);
         setLoading(false);
       })
@@ -1048,7 +1291,7 @@ function WordSyncArtifactTab({
         <ExportControls
           json={words ?? []}
           jsonFileName={`${meetingName}-word-sync.json`}
-          text={formatSpeakerWordTurnsText(turns)}
+          text={formatSpeakerWordTurnsText(turns, speakerNames)}
           textFileName={`${meetingName}-word-sync.txt`}
         />
         {diarization !== null && words !== null ? (
@@ -1073,7 +1316,15 @@ function WordSyncArtifactTab({
         speakerMenu !== null ? (
           <SpeakerContextMenu
             speakers={collectSpeakers(diarization)}
+            speakerNames={speakerNames}
             state={speakerMenu}
+            editText={
+              speakerMenu.turnIndex !== undefined
+                ? turns[speakerMenu.turnIndex]?.words
+                    .map((word) => word.word)
+                    .join(' ')
+                : undefined
+            }
             onClose={() => setSpeakerMenu(null)}
             onRename={async (speaker, name) => {
               await saveSpeakerNameArtifact(
@@ -1083,6 +1334,7 @@ function WordSyncArtifactTab({
                 loadArtifact,
                 saveArtifact,
               );
+              setSpeakerNames((current) => ({ ...current, [speaker]: name }));
               onSpeakerNamesSaved();
               setSpeakerMenu(null);
             }}
@@ -1098,6 +1350,32 @@ function WordSyncArtifactTab({
               setTurns(buildSpeakerWordTurns(words, mergedDiarization));
               setSpeakerMenu(null);
             }}
+            onEdit={async (turnIndex, text) => {
+              const turn = turns[turnIndex];
+
+              if (turn === undefined) {
+                return;
+              }
+
+              const nextWords = replaceWordSyncTurnWords(words, turn, text);
+              const transcript = await loadArtifact<Transcript>(
+                meetingId,
+                'transcript',
+              );
+
+              await saveArtifact(meetingId, 'word-sync', nextWords);
+              if (transcript !== null) {
+                await saveArtifact(
+                  meetingId,
+                  'transcript',
+                  replaceTranscriptTextForTimeRange(transcript, turn, text),
+                );
+              }
+              setWords(nextWords);
+              setTurns(buildSpeakerWordTurns(nextWords, diarization));
+              setWordCount(nextWords.length);
+              setSpeakerMenu(null);
+            }}
           />
         ) : null
       ) : null}
@@ -1107,6 +1385,8 @@ function WordSyncArtifactTab({
         <WordAssignmentPopover
           state={wordAssignmentPopover}
           turns={turns}
+          speakerNames={speakerNames}
+          speakers={collectSpeakers(diarization)}
           onClose={() => setWordAssignmentPopover(null)}
           onAssign={async (direction) => {
             const adjustedDiarization = assignWordToAdjacentSpeaker(
@@ -1114,6 +1394,20 @@ function WordSyncArtifactTab({
               turns,
               wordAssignmentPopover,
               direction,
+            );
+
+            await saveArtifact(meetingId, 'diarization', adjustedDiarization);
+            setDiarization(adjustedDiarization);
+            setTurns(buildSpeakerWordTurns(words, adjustedDiarization));
+            setWordAssignmentPopover(null);
+          }}
+          onAssignRange={async (range, speaker) => {
+            const adjustedDiarization = assignWordRangeToSpeaker(
+              diarization,
+              turns,
+              wordAssignmentPopover,
+              range,
+              speaker,
             );
 
             await saveArtifact(meetingId, 'diarization', adjustedDiarization);
@@ -1132,20 +1426,20 @@ function WordSyncArtifactTab({
               key={`${turn.startSeconds}-${index}`}
               className={styles.playbackSegment}
               tabIndex={0}
-              onContextMenu={(event) =>
-                openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu)
+            onContextMenu={(event) =>
+                openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu, index)
               }
               onKeyDown={(event) => {
                 if (
                   event.key === 'ContextMenu' ||
                   (event.shiftKey && event.key === 'F10')
                 ) {
-                  openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu);
+                  openSpeakerContextMenu(event, turn.speaker, setSpeakerMenu, index);
                 }
               }}
             >
               <div>
-                <strong>{turn.speaker}</strong>
+                <strong>{displaySpeakerName(turn.speaker, speakerNames)}</strong>
                 <span>
                   {formatTimestamp(turn.startSeconds)} to{' '}
                   {formatTimestamp(turn.endSeconds)} ({turn.wordCount} word
@@ -1153,36 +1447,24 @@ function WordSyncArtifactTab({
                 </span>
                 <span className={styles.wordSyncText}>
                   {turn.words.map((word, wordIndex) => (
-                    <span
+                    <WordSyncWord
                       key={`${word.timestampInMs}-${wordIndex}`}
-                      className={styles.wordSyncWord}
-                      data-timecode={formatTimestamp(word.timestampInMs / 1000)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void playRecordingFrom(
-                          audioRef,
-                          word.timestampInMs / 1000 - 5,
-                        );
-                      }}
-                      onContextMenu={(event) =>
-                        openWordAssignmentPopover(
-                          event,
-                          index,
-                          wordIndex,
-                          word.timestampInMs,
-                          setWordAssignmentPopover,
-                        )
-                      }
-                    >
-                      {word.word}
-                    </span>
+                      word={word}
+                      wordIndex={wordIndex}
+                      turnIndex={index}
+                      active={word.timestampInMs === activeWordTimestampInMs}
+                      activeWordRef={activeWordRef}
+                      audioRef={audioRef}
+                      setWordAssignmentPopover={setWordAssignmentPopover}
+                      formatTimestamp={formatTimestamp}
+                    />
                   ))}
                 </span>
               </div>
               <button
                 type="button"
                 className={styles.segmentPlayButton}
-                aria-label={`Play ${turn.speaker} from ${formatTimestamp(turn.startSeconds)}`}
+                aria-label={`Play ${displaySpeakerName(turn.speaker, speakerNames)} from ${formatTimestamp(turn.startSeconds)}`}
                 onClick={() =>
                   void playRecordingFrom(audioRef, turn.startSeconds)
                 }
@@ -1222,11 +1504,170 @@ function buildSpeakerWordTurns(
     .filter((turn) => turn.wordCount > 0);
 }
 
-function formatSpeakerWordTurnsText(turns: SpeakerWordTurn[]): string {
+interface WordSyncWordProps {
+  word: TimestampedWord;
+  wordIndex: number;
+  turnIndex: number;
+  active: boolean;
+  activeWordRef: RefObject<HTMLSpanElement | null>;
+  audioRef: MediaElementRef;
+  setWordAssignmentPopover: Dispatch<
+    SetStateAction<WordAssignmentPopoverState | null>
+  >;
+  formatTimestamp: (seconds: number) => string;
+}
+
+function WordSyncWord({
+  word,
+  wordIndex,
+  turnIndex,
+  active,
+  activeWordRef,
+  audioRef,
+  setWordAssignmentPopover,
+  formatTimestamp,
+}: WordSyncWordProps) {
+  return (
+    <span
+      ref={active ? activeWordRef : undefined}
+      className={styles.wordSyncWord}
+      data-active={active}
+      data-timecode={formatTimestamp(word.timestampInMs / 1000)}
+      onClick={(event) => {
+        event.stopPropagation();
+        void playRecordingFrom(audioRef, word.timestampInMs / 1000 - 5);
+      }}
+      onContextMenu={(event) =>
+        openWordAssignmentPopover(
+          event,
+          turnIndex,
+          wordIndex,
+          word.timestampInMs,
+          setWordAssignmentPopover,
+        )
+      }
+    >
+      {word.word}
+    </span>
+  );
+}
+
+function getActiveWordTimestampInMs(
+  words: TimestampedWord[],
+  currentPlaybackTime: number,
+): number | null {
+  const currentTimeInMs = currentPlaybackTime * 1000;
+  let activeWord: TimestampedWord | null = null;
+
+  for (const word of [...words].sort(
+    (first, second) => first.timestampInMs - second.timestampInMs,
+  )) {
+    if (word.timestampInMs > currentTimeInMs) {
+      break;
+    }
+
+    activeWord = word;
+  }
+
+  return activeWord?.timestampInMs ?? null;
+}
+
+function replaceWordSyncTurnWords(
+  words: TimestampedWord[],
+  turn: SpeakerWordTurn,
+  text: string,
+): TimestampedWord[] {
+  const nextWords = text.trim().split(/\s+/).filter(Boolean);
+  const unchangedWords = words.filter((word) => {
+    const wordSeconds = word.timestampInMs / 1000;
+
+    return wordSeconds < turn.startSeconds || wordSeconds >= turn.endSeconds;
+  });
+  const replacementWords = nextWords.map((word, index) => ({
+    word,
+    timestampInMs:
+      turn.words[index]?.timestampInMs ??
+      interpolateWordTimestampInMs(turn, index, nextWords.length),
+  }));
+
+  return [...unchangedWords, ...replacementWords].sort(
+    (first, second) => first.timestampInMs - second.timestampInMs,
+  );
+}
+
+function interpolateWordTimestampInMs(
+  turn: SpeakerWordTurn,
+  index: number,
+  wordCount: number,
+): number {
+  const startInMs = Math.round(turn.startSeconds * 1000);
+  const durationInMs = Math.max(
+    1,
+    Math.round((turn.endSeconds - turn.startSeconds) * 1000),
+  );
+
+  return startInMs + Math.round((durationInMs * (index + 1)) / (wordCount + 1));
+}
+
+function replaceTranscriptTextForTimeRange(
+  transcript: Transcript,
+  turn: SpeakerWordTurn,
+  text: string,
+): Transcript {
+  const overlappingSegments = transcript.segments.filter((segment) =>
+    rangesOverlap(
+      segment.startSeconds,
+      segment.endSeconds,
+      turn.startSeconds,
+      turn.endSeconds,
+    ),
+  );
+
+  if (overlappingSegments.length === 0) {
+    return transcript;
+  }
+
+  const firstSegment = overlappingSegments[0];
+  const nextSegments = transcript.segments
+    .map((segment) => {
+      if (segment === firstSegment) {
+        return { ...segment, text };
+      }
+
+      if (overlappingSegments.includes(segment)) {
+        return { ...segment, text: '' };
+      }
+
+      return segment;
+    })
+    .filter((segment) => segment.text.trim().length > 0);
+
+  return {
+    ...transcript,
+    text: nextSegments.map((segment) => segment.text).join(' '),
+    segments: nextSegments,
+  };
+}
+
+function rangesOverlap(
+  firstStart: number,
+  firstEnd: number,
+  secondStart: number,
+  secondEnd: number,
+): boolean {
+  return firstStart < secondEnd && secondStart < firstEnd;
+}
+
+function formatSpeakerWordTurnsText(
+  turns: SpeakerWordTurn[],
+  speakerNames: Record<string, string>,
+): string {
   return turns
     .map(
       (turn) =>
-        `${turn.speaker}: ${turn.words.map((word) => word.word).join(' ')}`,
+        `${displaySpeakerName(turn.speaker, speakerNames)}: ${turn.words
+          .map((word) => word.word)
+          .join(' ')}`,
     )
     .join('\n');
 }
@@ -1378,27 +1819,140 @@ function SpeakerNamesTab({
   );
 }
 
+interface TranscriptSegmentContextMenuProps {
+  state: TranscriptSegmentMenuState;
+  segmentText: string;
+  onEdit: (segmentIndex: number, text: string) => Promise<void>;
+  onClose: () => void;
+}
+
+function TranscriptSegmentContextMenu({
+  state,
+  segmentText,
+  onEdit,
+  onClose,
+}: TranscriptSegmentContextMenuProps) {
+  const [mode, setMode] = useState<'menu' | 'edit'>('menu');
+  const [text, setText] = useState(segmentText);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    }
+
+    function handleClick(): void {
+      onClose();
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('click', handleClick);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('click', handleClick);
+    };
+  }, [onClose]);
+
+  async function handleSave(): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onEdit(state.segmentIndex, trimmed);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className={styles.speakerMergePopover}
+      style={{ left: state.x, top: state.y }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {mode === 'menu' ? (
+        <>
+          <strong>Transcript segment</strong>
+          <button type="button" onClick={() => setMode('edit')}>
+            <span aria-hidden="true">✎</span>
+            Edit
+          </button>
+        </>
+      ) : null}
+
+      {mode === 'edit' ? (
+        <>
+          <strong>Edit transcript segment</strong>
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                void handleSave();
+              }
+            }}
+            disabled={saving}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving || text.trim().length === 0}
+          >
+            <span aria-hidden="true">✓</span>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
+            <span aria-hidden="true">←</span>
+            Back
+          </button>
+        </>
+      ) : null}
+
+      <button type="button" onClick={onClose} disabled={saving}>
+        <span aria-hidden="true">×</span>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 interface SpeakerContextMenuProps {
   speakers: string[];
+  speakerNames: Record<string, string>;
   state: SpeakerContextMenuState;
+  editText?: string;
   onRename: (speaker: string, name: string) => Promise<void>;
   onMerge: (sourceSpeaker: string, targetSpeaker: string) => Promise<void>;
+  onEdit?: (turnIndex: number, text: string) => Promise<void>;
   onClose: () => void;
 }
 
 function SpeakerContextMenu({
   speakers,
+  speakerNames,
   state,
+  editText,
   onRename,
   onMerge,
+  onEdit,
   onClose,
 }: SpeakerContextMenuProps) {
   const mergeTargets = speakers.filter(
     (speaker) => speaker !== state.sourceSpeaker,
   );
   const [mode, setMode] = useState<SpeakerContextMenuMode>('menu');
-  const [speakerName, setSpeakerName] = useState(state.sourceSpeaker);
+  const [speakerName, setSpeakerName] = useState(
+    displaySpeakerName(state.sourceSpeaker, speakerNames),
+  );
   const [targetSpeaker, setTargetSpeaker] = useState(mergeTargets[0] ?? '');
+  const [text, setText] = useState(editText ?? '');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -1454,6 +2008,20 @@ function SpeakerContextMenu({
     }
   }
 
+  async function handleEdit(): Promise<void> {
+    const trimmed = text.trim();
+    if (onEdit === undefined || state.turnIndex === undefined || trimmed.length === 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onEdit(state.turnIndex, trimmed);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div
       className={styles.speakerMergePopover}
@@ -1462,11 +2030,23 @@ function SpeakerContextMenu({
     >
       {mode === 'menu' ? (
         <>
-          <strong>{state.sourceSpeaker}</strong>
+          <strong>{displaySpeakerName(state.sourceSpeaker, speakerNames)}</strong>
           <button type="button" onClick={() => setMode('rename')}>
             <span aria-hidden="true">✎</span>
             Rename
           </button>
+          {onEdit !== undefined && state.turnIndex !== undefined ? (
+            <button
+              type="button"
+              onClick={() => {
+                setText(editText ?? '');
+                setMode('edit');
+              }}
+            >
+              <span aria-hidden="true">✎</span>
+              Edit
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setMode('merge')}
@@ -1480,7 +2060,9 @@ function SpeakerContextMenu({
 
       {mode === 'rename' ? (
         <>
-          <strong>Rename {state.sourceSpeaker}</strong>
+          <strong>
+            Rename {displaySpeakerName(state.sourceSpeaker, speakerNames)}
+          </strong>
           <span>Assign speaker name</span>
           <input
             type="text"
@@ -1511,7 +2093,9 @@ function SpeakerContextMenu({
 
       {mode === 'merge' ? (
         <>
-          <strong>Merge {state.sourceSpeaker}</strong>
+          <strong>
+            Merge {displaySpeakerName(state.sourceSpeaker, speakerNames)}
+          </strong>
           <span>Into speaker</span>
           <select
             value={targetSpeaker}
@@ -1520,7 +2104,7 @@ function SpeakerContextMenu({
           >
             {mergeTargets.map((speaker) => (
               <option key={speaker} value={speaker}>
-                {speaker}
+                {displaySpeakerName(speaker, speakerNames)}
               </option>
             ))}
           </select>
@@ -1531,6 +2115,35 @@ function SpeakerContextMenu({
           >
             <span aria-hidden="true">⇄</span>
             {saving ? 'Merging...' : 'Merge'}
+          </button>
+          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
+            <span aria-hidden="true">←</span>
+            Back
+          </button>
+        </>
+      ) : null}
+
+      {mode === 'edit' ? (
+        <>
+          <strong>Edit word sync segment</strong>
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                void handleEdit();
+              }
+            }}
+            disabled={saving}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => void handleEdit()}
+            disabled={saving || text.trim().length === 0}
+          >
+            <span aria-hidden="true">✓</span>
+            {saving ? 'Saving...' : 'Save'}
           </button>
           <button type="button" onClick={() => setMode('menu')} disabled={saving}>
             <span aria-hidden="true">←</span>
@@ -1551,18 +2164,41 @@ function openSpeakerContextMenu(
   event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>,
   sourceSpeaker: string,
   setSpeakerMenu: Dispatch<SetStateAction<SpeakerContextMenuState | null>>,
+  turnIndex?: number,
 ): void {
   event.preventDefault();
   event.stopPropagation();
 
   if ('clientX' in event && event.clientX !== 0 && event.clientY !== 0) {
-    setSpeakerMenu({ sourceSpeaker, x: event.clientX, y: event.clientY });
+    setSpeakerMenu({ sourceSpeaker, turnIndex, x: event.clientX, y: event.clientY });
     return;
   }
 
   const rect = event.currentTarget.getBoundingClientRect();
   setSpeakerMenu({
     sourceSpeaker,
+    turnIndex,
+    x: rect.left + 16,
+    y: rect.top + 16,
+  });
+}
+
+function openTranscriptSegmentMenu(
+  event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>,
+  segmentIndex: number,
+  setSegmentMenu: Dispatch<SetStateAction<TranscriptSegmentMenuState | null>>,
+): void {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if ('clientX' in event && event.clientX !== 0 && event.clientY !== 0) {
+    setSegmentMenu({ segmentIndex, x: event.clientX, y: event.clientY });
+    return;
+  }
+
+  const rect = event.currentTarget.getBoundingClientRect();
+  setSegmentMenu({
+    segmentIndex,
     x: rect.left + 16,
     y: rect.top + 16,
   });
@@ -1571,19 +2207,35 @@ function openSpeakerContextMenu(
 interface WordAssignmentPopoverProps {
   state: WordAssignmentPopoverState;
   turns: SpeakerWordTurn[];
+  speakerNames: Record<string, string>;
+  speakers: string[];
   onAssign: (direction: 'previous' | 'next') => Promise<void>;
+  onAssignRange: (
+    range: 'through-word' | 'from-word',
+    speaker: string,
+  ) => Promise<void>;
   onClose: () => void;
 }
 
 function WordAssignmentPopover({
   state,
   turns,
+  speakerNames,
+  speakers,
   onAssign,
+  onAssignRange,
   onClose,
 }: WordAssignmentPopoverProps) {
   const [saving, setSaving] = useState(false);
-  const hasPrevious = state.turnIndex > 0;
-  const hasNext = state.turnIndex < turns.length - 1;
+  const [rangeMode, setRangeMode] = useState<'through-word' | 'from-word' | null>(
+    null,
+  );
+  const [selectedSpeaker, setSelectedSpeaker] = useState(speakers[0] ?? '');
+  const previousTurn = turns[state.turnIndex - 1];
+  const nextTurn = turns[state.turnIndex + 1];
+  const hasPrevious = previousTurn !== undefined;
+  const hasNext = nextTurn !== undefined;
+  const newSpeaker = getNextSpeakerName(speakers);
 
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent): void {
@@ -1614,27 +2266,95 @@ function WordAssignmentPopover({
     }
   }
 
+  async function handleAssignRange(): Promise<void> {
+    if (rangeMode === null || selectedSpeaker.length === 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onAssignRange(rangeMode, selectedSpeaker);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div
       className={styles.speakerMergePopover}
       style={{ left: state.x, top: state.y }}
       onClick={(event) => event.stopPropagation()}
     >
-      <strong>Assign word</strong>
-      <button
-        type="button"
-        onClick={() => void handleAssign('previous')}
-        disabled={saving || !hasPrevious}
-      >
-        Assign to previous speaker
-      </button>
-      <button
-        type="button"
-        onClick={() => void handleAssign('next')}
-        disabled={saving || !hasNext}
-      >
-        Assign to next speaker
-      </button>
+      {rangeMode === null ? (
+        <>
+          <strong>Assign word</strong>
+          <button
+            type="button"
+            onClick={() => void handleAssign('previous')}
+            disabled={saving || !hasPrevious}
+          >
+            Assign to previous speaker
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleAssign('next')}
+            disabled={saving || !hasNext}
+          >
+            Assign to next speaker
+          </button>
+          <button
+            type="button"
+            onClick={() => setRangeMode('through-word')}
+            disabled={saving || speakers.length === 0}
+          >
+            Assign till here to speaker
+          </button>
+          <button
+            type="button"
+            onClick={() => setRangeMode('from-word')}
+            disabled={saving || speakers.length === 0}
+          >
+            Assign from here to speaker
+          </button>
+        </>
+      ) : null}
+
+      {rangeMode !== null ? (
+        <>
+          <strong>
+            {rangeMode === 'through-word'
+              ? 'Assign till here'
+              : 'Assign from here'}
+          </strong>
+          <span>Speaker</span>
+          <select
+            value={selectedSpeaker}
+            onChange={(event) => setSelectedSpeaker(event.target.value)}
+            disabled={saving}
+          >
+            {speakers.map((speaker) => (
+              <option key={speaker} value={speaker}>
+                {displaySpeakerName(speaker, speakerNames)}
+              </option>
+            ))}
+            <option value={newSpeaker}>New speaker ({newSpeaker})</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => void handleAssignRange()}
+            disabled={saving || selectedSpeaker.length === 0}
+          >
+            {saving ? 'Saving...' : 'Assign'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setRangeMode(null)}
+            disabled={saving}
+          >
+            Back
+          </button>
+        </>
+      ) : null}
       <button type="button" onClick={onClose} disabled={saving}>
         Cancel
       </button>
@@ -1664,6 +2384,69 @@ function openWordAssignmentPopover(
 
 function collectSpeakers(turns: SpeakerTurn[]): string[] {
   return [...new Set(turns.map((turn) => turn.speaker))].sort();
+}
+
+function getNextSpeakerName(speakers: string[]): string {
+  const highestNumber = speakers.reduce((highest, speaker) => {
+    const match = /^(.*?)(\d+)$/.exec(speaker);
+
+    if (match === null) {
+      return highest;
+    }
+
+    return Math.max(highest, Number.parseInt(match[2]!, 10));
+  }, -1);
+  const templateSpeaker = speakers.find((speaker) => /\d+$/.test(speaker));
+
+  if (templateSpeaker === undefined) {
+    return `Speaker ${speakers.length + 1}`;
+  }
+
+  const match = /^(.*?)(\d+)$/.exec(templateSpeaker);
+  const prefix = match?.[1] ?? 'Speaker ';
+  const digitCount = match?.[2]?.length ?? 1;
+  const nextNumber = highestNumber + 1;
+
+  return `${prefix}${String(nextNumber).padStart(digitCount, '0')}`;
+}
+
+function displaySpeakerName(
+  speaker: string,
+  speakerNames: Record<string, string>,
+): string {
+  const name = speakerNames[speaker]?.trim();
+
+  return name !== undefined && name.length > 0 ? name : speaker;
+}
+
+function useSpeakerNames(
+  meetingId: string,
+  speakers: string[],
+  loadArtifact: <U>(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ) => Promise<U | null>,
+): [Record<string, string>, Dispatch<SetStateAction<Record<string, string>>>] {
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+  const speakerKey = speakers.join('\0');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadArtifact<Record<string, string>>(meetingId, 'speaker-names').then(
+      (savedNames) => {
+        if (!cancelled) {
+          setSpeakerNames(savedNames ?? {});
+        }
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [meetingId, speakerKey, loadArtifact]);
+
+  return [speakerNames, setSpeakerNames];
 }
 
 async function saveSpeakerNameArtifact(
@@ -1696,12 +2479,75 @@ function mergeSpeakerTurns(
   sourceSpeaker: string,
   targetSpeaker: string,
 ): SpeakerTurn[] {
-  return mergeAdjacentSpeakerTurns(
-    turns.map((turn) => ({
-      ...turn,
-      speaker: turn.speaker === sourceSpeaker ? targetSpeaker : turn.speaker,
-    })),
+  return renumberSpeakersSequentially(
+    mergeAdjacentSpeakerTurns(
+      turns.map((turn) => ({
+        ...turn,
+        speaker: turn.speaker === sourceSpeaker ? targetSpeaker : turn.speaker,
+      })),
+    ),
   );
+}
+
+function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
+  const speakers = collectSpeakers(turns);
+  const numberedSpeakers = speakers
+    .map((speaker) => ({ speaker, match: /^(.*?)(\d+)$/.exec(speaker) }))
+    .filter(
+      (
+        item,
+      ): item is {
+        speaker: string;
+        match: RegExpExecArray;
+      } => item.match !== null,
+    );
+
+  if (numberedSpeakers.length !== speakers.length) {
+    return turns;
+  }
+
+  const prefixes = new Set(numberedSpeakers.map(({ match }) => match[1]));
+
+  if (prefixes.size !== 1) {
+    return turns;
+  }
+
+  const digitCount = Math.max(
+    ...numberedSpeakers.map(({ match }) => match[2]!.length),
+  );
+  const prefix = numberedSpeakers[0]?.match[1] ?? '';
+  const speakerMap = new Map(
+    numberedSpeakers.map(({ speaker }, index) => [
+      speaker,
+      `${prefix}${String(index).padStart(digitCount, '0')}`,
+    ]),
+  );
+
+  return turns.map((turn) => ({
+    ...turn,
+    speaker: speakerMap.get(turn.speaker) ?? turn.speaker,
+  }));
+}
+
+function speakerTurnsEqual(
+  firstTurns: SpeakerTurn[],
+  secondTurns: SpeakerTurn[],
+): boolean {
+  if (firstTurns.length !== secondTurns.length) {
+    return false;
+  }
+
+  return firstTurns.every((turn, index) => {
+    const otherTurn = secondTurns[index];
+
+    return (
+      otherTurn !== undefined &&
+      turn.speaker === otherTurn.speaker &&
+      turn.startSeconds === otherTurn.startSeconds &&
+      turn.endSeconds === otherTurn.endSeconds &&
+      turn.text === otherTurn.text
+    );
+  });
 }
 
 function mergeAdjacentSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
@@ -1800,6 +2646,96 @@ function assignWordToAdjacentSpeaker(
   currentTurn.endSeconds = boundarySeconds;
   nextTurn.startSeconds = boundarySeconds;
   return mergeAdjacentSpeakerTurns(adjusted);
+}
+
+function assignWordRangeToSpeaker(
+  diarization: SpeakerTurn[],
+  wordTurns: SpeakerWordTurn[],
+  state: WordAssignmentPopoverState,
+  range: 'through-word' | 'from-word',
+  speaker: string,
+): SpeakerTurn[] {
+  const wordTurn = wordTurns[state.turnIndex];
+
+  if (wordTurn === undefined) {
+    return diarization;
+  }
+
+  const diarizationIndex = diarization.findIndex(
+    (turn) =>
+      turn.speaker === wordTurn.speaker &&
+      turn.startSeconds === wordTurn.startSeconds &&
+      turn.endSeconds === wordTurn.endSeconds,
+  );
+
+  if (diarizationIndex === -1) {
+    return diarization;
+  }
+
+  const currentTurn = diarization[diarizationIndex];
+
+  if (currentTurn === undefined) {
+    return diarization;
+  }
+
+  const selectedWord = wordTurn.words[state.wordIndex];
+
+  if (selectedWord === undefined) {
+    return diarization;
+  }
+
+  const rangeStartSeconds =
+    range === 'through-word'
+      ? currentTurn.startSeconds
+      : selectedWord.timestampInMs / 1000;
+  const nextWord = wordTurn.words[state.wordIndex + 1];
+  const rangeEndSeconds =
+    range === 'through-word'
+      ? nextWord !== undefined
+        ? nextWord.timestampInMs / 1000
+        : currentTurn.endSeconds
+      : currentTurn.endSeconds;
+  const replacementTurns = splitTurnBySpeakerRange(
+    currentTurn,
+    rangeStartSeconds,
+    rangeEndSeconds,
+    speaker,
+  );
+
+  return mergeAdjacentSpeakerTurns([
+    ...diarization.slice(0, diarizationIndex),
+    ...replacementTurns,
+    ...diarization.slice(diarizationIndex + 1),
+  ]);
+}
+
+function splitTurnBySpeakerRange(
+  turn: SpeakerTurn,
+  rangeStartSeconds: number,
+  rangeEndSeconds: number,
+  speaker: string,
+): SpeakerTurn[] {
+  const clampedStart = clampBoundarySeconds(
+    rangeStartSeconds,
+    turn.startSeconds,
+    turn.endSeconds,
+  );
+  const clampedEnd = clampBoundarySeconds(
+    rangeEndSeconds,
+    clampedStart,
+    turn.endSeconds,
+  );
+
+  return [
+    { ...turn, endSeconds: clampedStart },
+    {
+      ...turn,
+      speaker,
+      startSeconds: clampedStart,
+      endSeconds: clampedEnd,
+    },
+    { ...turn, startSeconds: clampedEnd },
+  ].filter((nextTurn) => nextTurn.endSeconds > nextTurn.startSeconds);
 }
 
 function clampBoundarySeconds(

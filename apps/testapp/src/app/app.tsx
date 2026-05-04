@@ -518,6 +518,46 @@ function formatTimestamp(totalSeconds: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
+  const speakers = [...new Set(turns.map((turn) => turn.speaker))].sort();
+  const numberedSpeakers = speakers
+    .map((speaker) => ({ speaker, match: /^(.*?)(\d+)$/.exec(speaker) }))
+    .filter(
+      (
+        item,
+      ): item is {
+        speaker: string;
+        match: RegExpExecArray;
+      } => item.match !== null,
+    );
+
+  if (numberedSpeakers.length !== speakers.length) {
+    return turns;
+  }
+
+  const prefixes = new Set(numberedSpeakers.map(({ match }) => match[1]));
+
+  if (prefixes.size !== 1) {
+    return turns;
+  }
+
+  const digitCount = Math.max(
+    ...numberedSpeakers.map(({ match }) => match[2]!.length),
+  );
+  const prefix = numberedSpeakers[0]?.match[1] ?? '';
+  const speakerMap = new Map(
+    numberedSpeakers.map(({ speaker }, index) => [
+      speaker,
+      `${prefix}${String(index).padStart(digitCount, '0')}`,
+    ]),
+  );
+
+  return turns.map((turn) => ({
+    ...turn,
+    speaker: speakerMap.get(turn.speaker) ?? turn.speaker,
+  }));
+}
+
 function createWhisperOnnxDownload(
   repositoryId: string,
   label: string,
@@ -832,6 +872,21 @@ export function App() {
       await repo.deleteArtifact(meetingId, 'speaker-names');
     }
 
+    await refreshMeetings(repo);
+    setArtifactRevision((current) => current + 1);
+  }
+
+  async function deleteMeetingArtifact(
+    meetingId: string,
+    kind: MeetingArtifactKind,
+  ): Promise<void> {
+    const repo = meetingsRepoRef.current;
+
+    if (repo === null) {
+      throw new Error('Meetings repository is not ready.');
+    }
+
+    await repo.deleteArtifact(meetingId, kind);
     await refreshMeetings(repo);
     setArtifactRevision((current) => current + 1);
   }
@@ -1616,7 +1671,9 @@ export function App() {
         appendEngineLog(`[worker] posted diarization request ${requestId}.`);
       });
 
-      await repo.saveArtifact(selectedMeeting.id, 'diarization', turns);
+      const normalizedTurns = renumberSpeakersSequentially(turns);
+
+      await repo.saveArtifact(selectedMeeting.id, 'diarization', normalizedTurns);
       await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
       await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
@@ -1624,7 +1681,7 @@ export function App() {
 
       setEngineStatus('idle');
       setEngineMessage(
-        `Diarization completed: ${turns.length} speaker turn${turns.length === 1 ? '' : 's'} detected.`,
+        `Diarization completed: ${normalizedTurns.length} speaker turn${normalizedTurns.length === 1 ? '' : 's'} detected.`,
       );
     } catch (error) {
       setEngineStatus('error');
@@ -1979,6 +2036,7 @@ export function App() {
                   }
                   loadArtifact={loadMeetingArtifact}
                   saveArtifact={saveMeetingArtifact}
+                  deleteArtifact={deleteMeetingArtifact}
                   onUpdateMeeting={(id, patch) =>
                     void handleUpdateMeeting(id, patch)
                   }

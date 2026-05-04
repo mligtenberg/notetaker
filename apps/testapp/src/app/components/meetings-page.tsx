@@ -1,6 +1,5 @@
 import type { StoredMeetingSummary } from '@notetaker/filesystem';
 import styles from '../app.module.css';
-import { ExportControls } from './export-controls';
 
 interface MeetingsPageProps {
   meetings: StoredMeetingSummary[];
@@ -30,7 +29,6 @@ export function MeetingsPage({
   return (
     <section className={styles.panel}>
       <div className={styles.panelToolbar}>
-        <ExportControls json={meetings} jsonFileName="meetings.json" />
         <button type="button" onClick={onCreateMeeting} disabled={isCreating}>
           {isCreating ? 'Creating...' : '+ New meeting'}
         </button>

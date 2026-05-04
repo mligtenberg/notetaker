@@ -876,12 +876,18 @@
 }
 
 .speakerMergePopover input,
-.speakerMergePopover select {
+.speakerMergePopover select,
+.speakerMergePopover textarea {
   box-sizing: border-box;
   border-radius: 7px;
   margin: 0.2rem 0.35rem;
   min-width: 0;
   width: calc(100% - 0.7rem);
+}
+
+.speakerMergePopover textarea {
+  min-height: 7rem;
+  resize: vertical;
 }
 
 .speakerMergePopover button {
@@ -954,6 +960,19 @@
   margin-bottom: 0.85rem;
 }
 
+.stickyRecordingPlayback {
+  background: rgba(11, 20, 36, 0.96);
+  border-radius: 12px;
+  padding: 0.5rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.stickyRecordingPlayback video {
+  max-height: 18rem;
+}
+
 .recordingPlayback audio,
 .recordingPlayback video {
   width: 100%;
@@ -1009,6 +1028,12 @@
 .transcriptResult li .wordSyncWord:hover {
   background: rgba(167, 243, 208, 0.12);
   color: #ecfdf5;
+}
+
+.transcriptResult li .wordSyncWord[data-active='true'] {
+  background: #a7f3d0;
+  color: #08111f;
+  box-shadow: 0 0 0 2px rgba(167, 243, 208, 0.22);
 }
 
 .transcriptResult li .wordSyncWord:hover::after,
