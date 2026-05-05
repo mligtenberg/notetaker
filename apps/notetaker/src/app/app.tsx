@@ -1,17 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { AudioRecorder } from '@notetaker/audio-recorder';
 import {
   type SpeakerTurn,
   type Transcript,
 } from '@notetaker/engine';
-import {
-  FileSystem,
-  MeetingsRepository,
-  type LanguageMode,
-  type MeetingArtifactKind,
-  type StoredMeetingSummary,
-} from '@notetaker/filesystem';
+import { FileSystem } from '@notetaker/filesystem';
 import {
   ModelManager,
   type ManagedModel,
@@ -30,7 +23,6 @@ import type {
   DownloadProgressState,
   EngineStatus,
   LiveTranscriptSegment,
-  RecorderStatus,
 } from './app.types';
 import {
   PAGE_PATHS,
@@ -40,7 +32,6 @@ import {
   resolveViewingMeetingId,
 } from './app-routing';
 import { formatBytes, formatDate, formatTimestamp } from './utils/formatters';
-import { mimeTypeToExtension, todayIsoDate } from './utils/media-files';
 import {
   MODEL_DOWNLOAD_SECTIONS,
   MODEL_DOWNLOAD_TARGETS,
@@ -55,6 +46,7 @@ import {
 } from './services/model-downloads';
 import { DownloadProgressDialog } from './components/download-progress-dialog';
 import { EngineLogDialog } from './components/engine-log-dialog';
+import { useMeetingsController } from './hooks/use-meetings-controller';
 
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type NavigatorWithWebGpu = Navigator & {
@@ -201,32 +193,20 @@ function getWhisperRuntimeLabel(version: ModelVersionManifestEntry): string {
 }
 
 export function App() {
-  const recorderRef = useRef<AudioRecorder | null>(null);
-  const meetingsRepoRef = useRef<MeetingsRepository | null>(null);
   const modelManagerRef = useRef<ModelManager | null>(null);
   const engineWorkerRef = useRef<Worker | null>(null);
   const engineRequestIdRef = useRef(0);
-  const [status, setStatus] = useState<RecorderStatus>('idle');
   const [engineStatus, setEngineStatus] = useState<EngineStatus>('idle');
-  const [message, setMessage] = useState('Opening OPFS meetings folder...');
   const [modelMessage, setModelMessage] = useState(
     'Opening OPFS models folder...',
   );
   const [engineMessage, setEngineMessage] = useState(
     'Select a meeting and run the engine.',
   );
-  const [meetings, setMeetings] = useState<StoredMeetingSummary[]>([]);
-  const [artifactRevision, setArtifactRevision] = useState(0);
-  const [meetingUrls, setMeetingUrls] = useState<Record<string, string>>({});
-  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [modelVersions, setModelVersions] = useState<
     ModelVersionManifestEntry[]
   >([]);
   const [downloadingModel, setDownloadingModel] = useState<ManagedModel | null>(
-    null,
-  );
-  const [selectedMeetingId, setSelectedMeetingId] = useState('');
-  const [recordingMeetingId, setRecordingMeetingId] = useState<string | null>(
     null,
   );
   const [engineDialogOpen, setEngineDialogOpen] = useState(false);
@@ -248,6 +228,35 @@ export function App() {
   const activeSettingsModel = resolveSettingsModel(location.pathname);
   const [downloadProgress, setDownloadProgress] =
     useState<DownloadProgressState | null>(null);
+  const {
+    meetingsRepoRef,
+    status,
+    message,
+    meetings,
+    artifactRevision,
+    meetingUrls,
+    creatingMeeting,
+    selectedMeetingId,
+    recordingMeetingId,
+    refreshMeetings,
+    setArtifactRevision,
+    createMeeting,
+    loadMeetingArtifact,
+    saveMeetingArtifact,
+    deleteMeetingArtifact,
+    updateMeeting,
+    startRecording,
+    stopRecording,
+    uploadRecording,
+    deleteMeeting,
+    cancelRecording,
+  } = useMeetingsController({
+    navigate,
+    viewingMeetingId,
+    onSelectedMeetingDeleted: () => {
+      setEngineMessage('Select a meeting and run the engine.');
+    },
+  });
 
   useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
@@ -262,109 +271,12 @@ export function App() {
     }
   }, [location.pathname, navigate]);
 
-  useEffect(() => {
-    return () => {
-      for (const url of Object.values(meetingUrls)) {
-        URL.revokeObjectURL(url);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function refreshMeetings(repo = meetingsRepoRef.current) {
-    if (repo === null) {
-      return;
-    }
-
-    const summaries = await repo.list();
-
-    setMeetingUrls((current) => {
-      const next: Record<string, string> = {};
-      const keepIds = new Set(summaries.map((m) => m.id));
-
-      for (const [id, url] of Object.entries(current)) {
-        if (keepIds.has(id)) {
-          next[id] = url;
-        } else {
-          URL.revokeObjectURL(url);
-        }
-      }
-
-      return next;
-    });
-
-    setMeetings(summaries);
-
-    // Take a snapshot of existing URLs to avoid stale-closure issues when URLs are added
-    // or removed in this loop.
-    const existingUrlsSnapshot = { ...meetingUrls };
-    for (const summary of summaries) {
-      if (existingUrlsSnapshot[summary.id] !== undefined) {
-        continue;
-      }
-
-      try {
-        const file = await repo.loadRecording(summary.id);
-        const url = URL.createObjectURL(file);
-        // Guard against races: if the URL already exists in the latest state snapshot, revoke the new URL
-        // immediately to avoid leaks and avoid duplicating entries.
-        if (existingUrlsSnapshot[summary.id] !== undefined) {
-          URL.revokeObjectURL(url);
-          continue;
-        }
-        setMeetingUrls((current) => ({ ...current, [summary.id]: url }));
-      } catch {
-        // Recording missing — skip url generation.
-      }
-    }
-
-    if (selectedMeetingId.length === 0 && summaries[0] !== undefined) {
-      setSelectedMeetingId(summaries[0].id);
-    }
-  }
-
   async function refreshModelVersions(modelManager = modelManagerRef.current) {
     if (modelManager === null) {
       return;
     }
 
     setModelVersions(await modelManager.listVersions());
-  }
-
-  async function saveMeetingArtifact<T>(
-    meetingId: string,
-    kind: MeetingArtifactKind,
-    data: T,
-  ): Promise<void> {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null) {
-      throw new Error('Meetings repository is not ready.');
-    }
-
-    await repo.saveArtifact(meetingId, kind, data);
-
-    if (kind === 'diarization') {
-      await repo.deleteArtifact(meetingId, 'speaker-names');
-    }
-
-    await refreshMeetings(repo);
-    setArtifactRevision((current) => current + 1);
-  }
-
-  async function deleteMeetingArtifact(
-    meetingId: string,
-    kind: MeetingArtifactKind,
-  ): Promise<void> {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null) {
-      throw new Error('Meetings repository is not ready.');
-    }
-
-    await repo.deleteArtifact(meetingId, kind);
-    await refreshMeetings(repo);
-    setArtifactRevision((current) => current + 1);
   }
 
   function getDirectDownloadVersion(
@@ -383,23 +295,16 @@ export function App() {
       }
     });
 
-    async function setupRecorder() {
+    async function setupModels() {
       try {
-        const meetingsDir = await fileSystem.getMeetingsDir();
         const modelManager = await ModelManager.create(fileSystem);
 
         if (!isMounted) {
           return;
         }
 
-        const repo = new MeetingsRepository(meetingsDir);
-        meetingsRepoRef.current = repo;
         modelManagerRef.current = modelManager;
-        recorderRef.current = new AudioRecorder(meetingsDir);
-        await refreshMeetings(repo);
         await refreshModelVersions(modelManager);
-        setStatus('ready');
-        setMessage('Ready. Meetings will be saved to OPFS/meetings.');
         setModelMessage(
           'Ready. Manage downloaded model versions in OPFS/models.',
         );
@@ -408,12 +313,6 @@ export function App() {
           return;
         }
 
-        setStatus('error');
-        setMessage(
-          error instanceof Error
-            ? error.message
-            : 'Failed to open OPFS meetings folder.',
-        );
         setModelMessage(
           error instanceof Error
             ? error.message
@@ -422,259 +321,14 @@ export function App() {
       }
     }
 
-    void setupRecorder();
+    void setupModels();
 
     return () => {
       isMounted = false;
-      recorderRef.current?.cancel();
       engineWorkerRef.current?.terminate();
       engineWorkerRef.current = null;
     };
   }, []);
-
-  async function handleCreateMeeting() {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null || creatingMeeting) {
-      return;
-    }
-
-    try {
-      setCreatingMeeting(true);
-      const meeting = await repo.create({
-        name: 'Untitled meeting',
-        date: todayIsoDate(),
-        participantCount: 2,
-      });
-      await refreshMeetings(repo);
-      setSelectedMeetingId(meeting.id);
-      setStatus('ready');
-      setMessage('');
-      navigate(`/meetings/${meeting.id}`);
-    } catch (error) {
-      setStatus('error');
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to create meeting.',
-      );
-    } finally {
-      setCreatingMeeting(false);
-    }
-  }
-
-  const loadMeetingArtifact = useCallback(
-    <T,>(meetingId: string, kind: MeetingArtifactKind): Promise<T | null> => {
-      const repo = meetingsRepoRef.current;
-
-      if (repo === null) {
-        return Promise.resolve(null);
-      }
-
-      return repo.loadArtifact<T>(meetingId, kind);
-    },
-    [],
-  );
-
-  async function handleUpdateMeeting(
-    id: string,
-    patch: Partial<{
-      name: string;
-      date: string;
-      participantCount: number;
-      languageMode: LanguageMode;
-    }>,
-  ) {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null) {
-      return;
-    }
-
-    try {
-      await repo.updateMetadata(id, patch);
-      await refreshMeetings(repo);
-    } catch (error) {
-      setStatus('error');
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to update meeting.',
-      );
-    }
-  }
-
-  async function handleStartRecording(meetingId: string) {
-    const recorder = recorderRef.current;
-    if (recorder === null) {
-      return;
-    }
-
-    try {
-      setMessage('Requesting microphone access...');
-      await recorder.start();
-      setRecordingMeetingId(meetingId);
-      setStatus('recording');
-      setMessage('Recording. Stop to attach the audio to the meeting.');
-    } catch (error) {
-      setStatus('error');
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to start recording.',
-      );
-    }
-  }
-
-  async function handleStopRecording() {
-    const recorder = recorderRef.current;
-    const repo = meetingsRepoRef.current;
-    const meetingId = recordingMeetingId;
-
-    if (recorder === null || repo === null || meetingId === null) {
-      return;
-    }
-
-    try {
-      setStatus('saving');
-      setMessage('Saving recording...');
-      const recording = await recorder.stop();
-      // Remove the scratch file the recorder wrote to the meetings root.
-      try {
-        await repo.directoryHandle.removeEntry(recording.fileName);
-      } catch {
-        // Ignore; scratch file may already be gone.
-      }
-
-      const summary = await repo.attachRecording(meetingId, {
-        blob: recording.blob,
-        mimeType: recording.mimeType,
-        extension: mimeTypeToExtension(recording.mimeType),
-      });
-
-      // Drop any cached object URL so the new recording is reloaded.
-      setMeetingUrls((current) => {
-        const url = current[meetingId];
-        if (url === undefined) {
-          return current;
-        }
-        URL.revokeObjectURL(url);
-        const next = { ...current };
-        delete next[meetingId];
-        return next;
-      });
-
-      await refreshMeetings(repo);
-      setRecordingMeetingId(null);
-      setStatus('ready');
-      setMessage(`Attached recording to "${summary.name}".`);
-    } catch (error) {
-      setRecordingMeetingId(null);
-      setStatus('error');
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to save recording.',
-      );
-    }
-  }
-
-  async function handleUploadRecording(meetingId: string, file: File) {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null) {
-      return;
-    }
-
-    try {
-      setStatus('saving');
-      setMessage(`Importing ${file.name}...`);
-
-      const mimeType = file.type || 'application/octet-stream';
-      const extensionFromName = file.name.includes('.')
-        ? file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase()
-        : '';
-      const extension =
-        extensionFromName.length > 0
-          ? extensionFromName
-          : mimeTypeToExtension(mimeType);
-
-      const summary = await repo.attachRecording(meetingId, {
-        blob: file,
-        mimeType,
-        extension,
-      });
-
-      setMeetingUrls((current) => {
-        const url = current[meetingId];
-        if (url === undefined) {
-          return current;
-        }
-        URL.revokeObjectURL(url);
-        const next = { ...current };
-        delete next[meetingId];
-        return next;
-      });
-
-      await refreshMeetings(repo);
-      setStatus('ready');
-      setMessage(`Imported ${file.name} into "${summary.name}".`);
-    } catch (error) {
-      setStatus('error');
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to import audio file.',
-      );
-    }
-  }
-
-  async function handleDeleteMeeting(meeting: StoredMeetingSummary) {
-    const repo = meetingsRepoRef.current;
-
-    if (repo === null) {
-      return;
-    }
-
-    const confirmed = window.confirm(`Delete meeting "${meeting.name}"?`);
-
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      setStatus('saving');
-      setMessage(`Deleting meeting "${meeting.name}"...`);
-      await repo.delete(meeting.id);
-
-      const url = meetingUrls[meeting.id];
-      if (url !== undefined) {
-        URL.revokeObjectURL(url);
-        setMeetingUrls((current) => {
-          const next = { ...current };
-          delete next[meeting.id];
-          return next;
-        });
-      }
-
-      if (selectedMeetingId === meeting.id) {
-        setSelectedMeetingId('');
-        setEngineMessage('Select a meeting and run the engine.');
-      }
-
-      if (viewingMeetingId === meeting.id) {
-        navigate('/meetings');
-      }
-
-      await refreshMeetings(repo);
-      setStatus('ready');
-      setMessage(`Deleted meeting "${meeting.name}".`);
-    } catch (error) {
-      setStatus('error');
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : `Failed to delete meeting "${meeting.name}".`,
-      );
-    }
-  }
-
-  function handleCancelRecording() {
-    recorderRef.current?.cancel();
-    setRecordingMeetingId(null);
-    setStatus('ready');
-    setMessage('Recording canceled. No audio was attached.');
-  }
 
   function getModelVersions(model: ManagedModel): ModelVersionManifestEntry[] {
     return filterModelVersions(modelVersions, model);
@@ -1488,19 +1142,17 @@ export function App() {
                   loadArtifact={loadMeetingArtifact}
                   saveArtifact={saveMeetingArtifact}
                   deleteArtifact={deleteMeetingArtifact}
-                  onUpdateMeeting={(id, patch) =>
-                    void handleUpdateMeeting(id, patch)
-                  }
+                  onUpdateMeeting={(id, patch) => void updateMeeting(id, patch)}
                   onStartRecording={() =>
-                    void handleStartRecording(viewedMeeting.id)
+                    void startRecording(viewedMeeting.id)
                   }
-                  onStopRecording={() => void handleStopRecording()}
-                  onCancelRecording={handleCancelRecording}
+                  onStopRecording={() => void stopRecording()}
+                  onCancelRecording={cancelRecording}
                   onUploadRecording={(file) =>
-                    void handleUploadRecording(viewedMeeting.id, file)
+                    void uploadRecording(viewedMeeting.id, file)
                   }
                   onDeleteMeeting={() =>
-                    void handleDeleteMeeting(viewedMeeting)
+                    void deleteMeeting(viewedMeeting)
                   }
                   onRunTranscript={() =>
                     void handleRunTranscription(viewedMeeting.id)
@@ -1533,7 +1185,7 @@ export function App() {
             meetings={meetings}
             message={message}
             isCreating={creatingMeeting}
-            onCreateMeeting={() => void handleCreateMeeting()}
+            onCreateMeeting={() => void createMeeting()}
             onOpenMeeting={(meeting) => navigate(`/meetings/${meeting.id}`)}
             formatDate={formatDate}
           />
