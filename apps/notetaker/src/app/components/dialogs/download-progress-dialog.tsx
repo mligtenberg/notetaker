@@ -1,6 +1,6 @@
-import type { DownloadProgressState } from '../app.types';
-import styles from '../app.module.css';
-import { Dialog } from './dialog';
+import type { DownloadProgressState } from '../../app.types';
+import styles from '../../app.module.css';
+import { Dialog } from '../common/dialog';
 
 interface DownloadProgressDialogProps {
   progress: DownloadProgressState;

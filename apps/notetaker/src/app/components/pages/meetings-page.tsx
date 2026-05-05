@@ -1,6 +1,6 @@
 import type { StoredMeetingSummary } from '@notetaker/filesystem';
-import styles from '../app.module.css';
-import { Page } from './page';
+import styles from '../../app.module.css';
+import { Page } from '../common/page';
 
 interface MeetingsPageProps {
   meetings: StoredMeetingSummary[];

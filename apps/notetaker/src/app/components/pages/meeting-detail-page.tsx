@@ -16,9 +16,9 @@ import type {
   MeetingArtifactKind,
   StoredMeetingSummary,
 } from '@notetaker/filesystem';
-import styles from '../app.module.css';
+import styles from '../../app.module.css';
 import { ExportControls } from './export-controls';
-import { Page } from './page';
+import { Page } from '../common/page';
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';

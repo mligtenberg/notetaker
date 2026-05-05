@@ -8,12 +8,12 @@ import {
   resolveSettingsModel,
   resolveViewingMeetingId,
 } from './app-routing';
-import { DownloadProgressDialog } from './components/download-progress-dialog';
-import { EngineLogDialog } from './components/engine-log-dialog';
-import { MeetingDetailPage } from './components/meeting-detail-page';
-import { MeetingsPage } from './components/meetings-page';
-import { ModelsPage } from './components/models-page';
-import { Page } from './components/page';
+import { Page } from './components/common/page';
+import { DownloadProgressDialog } from './components/dialogs/download-progress-dialog';
+import { EngineLogDialog } from './components/dialogs/engine-log-dialog';
+import { MeetingDetailPage } from './components/pages/meeting-detail-page';
+import { MeetingsPage } from './components/pages/meetings-page';
+import { ModelsPage } from './components/pages/models-page';
 import {
   MODEL_DOWNLOAD_SECTIONS,
   MODEL_DOWNLOAD_TARGETS,

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
-import type { EngineStatus, LiveTranscriptSegment } from '../app.types';
-import styles from '../app.module.css';
-import { Dialog } from './dialog';
+import type { EngineStatus, LiveTranscriptSegment } from '../../app.types';
+import styles from '../../app.module.css';
+import { Dialog } from '../common/dialog';
 
 interface EngineLogDialogProps {
   mode: 'engine' | 'transcription';

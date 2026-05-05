@@ -6,9 +6,9 @@ import type {
   DirectModelDownload,
   DownloadSection,
   ModelDownloadTarget,
-} from '../services/model-downloads';
-import styles from '../app.module.css';
-import { Page } from './page';
+} from '../../services/model-downloads';
+import styles from '../../app.module.css';
+import { Page } from '../common/page';
 
 interface RepositoryDownloadGroup {
   id: string;
