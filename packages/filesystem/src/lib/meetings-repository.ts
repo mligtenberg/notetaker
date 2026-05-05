@@ -1,4 +1,5 @@
 import type {
+  LanguageMode,
   MeetingArtifactKind,
   StoredMeeting,
   StoredMeetingSummary,
@@ -32,6 +33,7 @@ export interface MeetingMetadataPatch {
   name?: string;
   date?: string;
   participantCount?: number;
+  languageMode?: LanguageMode;
 }
 
 export class MeetingsRepository {
@@ -127,6 +129,9 @@ export class MeetingsRepository {
       ...(patch.date !== undefined ? { date: patch.date } : {}),
       ...(patch.participantCount !== undefined
         ? { participantCount: patch.participantCount }
+        : {}),
+      ...(patch.languageMode !== undefined
+        ? { languageMode: patch.languageMode }
         : {}),
     };
     await writeJson(meetingDir, METADATA_FILE, updated);

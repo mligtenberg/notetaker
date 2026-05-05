@@ -6,7 +6,7 @@ import type { EngineProgressEvent } from '../../../../packages/engine/src/lib/en
 import type { MeetingNotes } from '../../../../packages/engine/src/lib/models/meeting-notes';
 import type { SpeakerTurn } from '../../../../packages/engine/src/lib/models/speaker-turn';
 import type { Transcript } from '../../../../packages/engine/src/lib/models/transcript';
-import { FileSystem } from '@notetaker/filesystem';
+import { FileSystem, type LanguageMode } from '@notetaker/filesystem';
 import { ModelManager } from '@notetaker/model-manager';
 
 interface WorkerTranscriptSegment {
@@ -133,7 +133,8 @@ export interface EngineWorkerRequest {
     | 'transcription'
     | 'diarization'
     | 'word-sync'
-    | 'speaker-naming';
+    | 'speaker-naming'
+    | 'detect-language';
   fileName: string;
   audio: Float32Array;
   audioSampleRate?: number;
@@ -141,6 +142,8 @@ export interface EngineWorkerRequest {
   numSpeakers?: number | null;
   transcript?: Transcript;
   diarization?: SpeakerTurn[];
+  language?: string;
+  languageMode?: LanguageMode;
 }
 
 export type EngineWorkerResponse =
@@ -188,6 +191,13 @@ export type EngineWorkerResponse =
       mode: 'speaker-naming';
       names: Record<string, string>;
     }
+  | {
+      id: number;
+      type: 'result';
+      ok: true;
+      mode: 'detect-language';
+      language: string | null;
+    }
   | { id: number; type: 'result'; ok: false; error: string };
 
 let modelManagerPromise: Promise<ModelManager> | null = null;
@@ -224,6 +234,37 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
       );
       const engine = new Engine(new PipelineFactory(), modelManager);
 
+      if (mode === 'detect-language') {
+        const progress: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'transcription', status: 'started' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(progress);
+        log(
+          `[language-detection] worker received ${audio.length} samples for ${fileName}.`,
+        );
+        const language = await engine.detectAudioLanguage(audio, {
+          debug: log,
+        });
+        log(`[language-detection] worker resolved language=${language ?? 'null'}.`);
+        const completed: EngineWorkerResponse = {
+          id,
+          type: 'progress',
+          event: { stage: 'transcription', status: 'completed' },
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(completed);
+        const response: EngineWorkerResponse = {
+          id,
+          type: 'result',
+          ok: true,
+          mode: 'detect-language',
+          language,
+        };
+        (self as DedicatedWorkerGlobalScope).postMessage(response);
+        return;
+      }
+
       if (mode === 'transcription') {
         const fragments: TimestampedText[] = [];
         const progress: EngineWorkerResponse = {
@@ -235,6 +276,33 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
         log(
           `[transcription] worker received ${audio.length} samples for ${fileName}.`,
         );
+        const languageMode: LanguageMode =
+          event.data.languageMode ?? 'auto-once';
+        let language = event.data.language;
+        let task: 'transcribe' | 'translate' | undefined;
+        if (languageMode === 'translate') {
+          log('[language-mode] translate selected; transcribing to English.');
+          task = 'translate';
+          language = undefined;
+        } else if (language === undefined) {
+          if (languageMode === 'auto-per-chunk') {
+            log(
+              '[language-mode] auto-per-chunk not yet implemented; falling back to auto-once.',
+            );
+          }
+          log('[language-detection] running detection before transcription...');
+          const detected = await engine.detectAudioLanguage(audio, {
+            debug: log,
+          });
+          if (detected !== null) {
+            language = detected;
+            log(`[language-detection] using detected language '${detected}'.`);
+          } else {
+            log(
+              '[language-detection] no language detected; transcription will fall back to default.',
+            );
+          }
+        }
         const transcriptText = await engine.transcribeAudio(
           audio,
           (updates) => {
@@ -252,6 +320,8 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
             (self as DedicatedWorkerGlobalScope).postMessage(message);
           },
           log,
+          language,
+          task,
         );
         log(
           `[transcription] worker completed with transcript length=${transcriptText.length}; fragments=${fragments.length}.`,

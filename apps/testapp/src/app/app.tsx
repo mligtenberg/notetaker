@@ -8,6 +8,7 @@ import {
 import {
   FileSystem,
   MeetingsRepository,
+  type LanguageMode,
   type MeetingArtifactKind,
   type StoredMeetingSummary,
 } from '@notetaker/filesystem';
@@ -1100,7 +1101,12 @@ export function App() {
 
   async function handleUpdateMeeting(
     id: string,
-    patch: Partial<{ name: string; date: string; participantCount: number }>,
+    patch: Partial<{
+      name: string;
+      date: string;
+      participantCount: number;
+      languageMode: LanguageMode;
+    }>,
   ) {
     const repo = meetingsRepoRef.current;
 
@@ -1525,6 +1531,16 @@ export function App() {
     setLiveTranscriptSegments([]);
 
     try {
+      // Drop any previously-saved transcript (and its dependents) before
+      // starting. If this run is interrupted (page refresh, crash) the
+      // meeting will be left in a clean "no transcript" state rather than
+      // showing stale data from a prior run.
+      await repo.deleteArtifact(selectedMeeting.id, 'transcript');
+      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
+      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
+
       const audioFile = await repo.loadRecording(selectedMeeting.id);
       setEngineMessage(`Decoding ${selectedMeeting.name}...`);
       setEngineLog((current) => [
@@ -1589,6 +1605,7 @@ export function App() {
           fileName: selectedMeeting.name,
           audio: samples,
           useWebGpu: webGpuSupport === 'supported',
+          languageMode: selectedMeeting.languageMode ?? 'auto-once',
         };
         appendEngineLog(
           `[worker] posting transcription request ${requestId} with ${sampleCount} samples (${sampleDurationSeconds.toFixed(3)}s).`,

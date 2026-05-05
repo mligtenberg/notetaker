@@ -12,6 +12,7 @@ import {
 } from 'react';
 import type { SpeakerTurn, Transcript } from '@notetaker/engine';
 import type {
+  LanguageMode,
   MeetingArtifactKind,
   StoredMeetingSummary,
 } from '@notetaker/filesystem';
@@ -114,7 +115,12 @@ interface MeetingDetailPageProps {
   ) => Promise<void>;
   onUpdateMeeting: (
     id: string,
-    patch: Partial<{ name: string; date: string; participantCount: number }>,
+    patch: Partial<{
+      name: string;
+      date: string;
+      participantCount: number;
+      languageMode: LanguageMode;
+    }>,
   ) => void;
   onStartRecording: () => void;
   onStopRecording: () => void;
@@ -262,6 +268,9 @@ export function MeetingDetailPage({
           onStopRecording={onStopRecording}
           onCancelRecording={onCancelRecording}
           onUploadRecording={onUploadRecording}
+          onChangeLanguageMode={(mode) =>
+            onUpdateMeeting(meeting.id, { languageMode: mode })
+          }
           formatBytes={formatBytes}
         />
       ) : null}
@@ -282,10 +291,7 @@ export function MeetingDetailPage({
             showLogging={loggingAvailableTab === 'transcript'}
           />
           {processing && liveTranscriptSegments.length > 0 ? (
-            <LiveTranscriptPreview
-              segments={liveTranscriptSegments}
-              formatTimestamp={formatTimestamp}
-            />
+            <LiveTranscriptPreview segments={liveTranscriptSegments} />
           ) : processing ? (
             <p className={styles.empty}>Waiting for speech...</p>
           ) : (
@@ -619,8 +625,15 @@ interface RecordingTabProps {
   onStopRecording: () => void;
   onCancelRecording: () => void;
   onUploadRecording: (file: File) => void;
+  onChangeLanguageMode: (mode: LanguageMode) => void;
   formatBytes: (size: number) => string;
 }
+
+const LANGUAGE_MODE_OPTIONS: { value: LanguageMode; label: string }[] = [
+  { value: 'auto-once', label: 'Auto-detect once (recommended)' },
+  { value: 'auto-per-chunk', label: 'Auto-detect per chunk (experimental)' },
+  { value: 'translate', label: 'Translate to English' },
+];
 
 function RecordingTab({
   meeting,
@@ -632,9 +645,11 @@ function RecordingTab({
   onStopRecording,
   onCancelRecording,
   onUploadRecording,
+  onChangeLanguageMode,
   formatBytes,
 }: RecordingTabProps) {
   const hasRecording = meeting.recordingFileName !== null;
+  const languageMode: LanguageMode = meeting.languageMode ?? 'auto-once';
 
   function handleUpload(event: ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
@@ -701,6 +716,23 @@ function RecordingTab({
           </>
         )}
       </div>
+
+      <label className={styles.uploadInline}>
+        <span>Language handling</span>
+        <select
+          value={languageMode}
+          onChange={(event) =>
+            onChangeLanguageMode(event.target.value as LanguageMode)
+          }
+          disabled={isRecording || status === 'saving'}
+        >
+          {LANGUAGE_MODE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
     </>
   );
 }
@@ -881,13 +913,9 @@ function TranscriptArtifactView({
 
 interface LiveTranscriptPreviewProps {
   segments: LiveTranscriptSegment[];
-  formatTimestamp: (seconds: number) => string;
 }
 
-function LiveTranscriptPreview({
-  segments,
-  formatTimestamp,
-}: LiveTranscriptPreviewProps) {
+function LiveTranscriptPreview({ segments }: LiveTranscriptPreviewProps) {
   return (
     <div className={styles.transcriptResult}>
       <div className={styles.resultHeader}>
@@ -899,7 +927,6 @@ function LiveTranscriptPreview({
       <ul>
         {segments.map((segment, index) => (
           <li key={`${segment.startSeconds}-${index}`}>
-            <strong>[{formatTimestamp(segment.startSeconds)}]</strong>
             <span>{segment.text}</span>
           </li>
         ))}

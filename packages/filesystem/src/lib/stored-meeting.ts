@@ -4,6 +4,8 @@ export type MeetingArtifactKind =
   | 'word-sync'
   | 'speaker-names';
 
+export type LanguageMode = 'auto-once' | 'auto-per-chunk' | 'translate';
+
 export interface StoredMeeting {
   id: string;
   name: string;
@@ -13,6 +15,7 @@ export interface StoredMeeting {
   recordingMimeType: string | null;
   recordingSize: number | null;
   createdAt: number;
+  languageMode?: LanguageMode;
 }
 
 export interface StoredMeetingSummary extends StoredMeeting {

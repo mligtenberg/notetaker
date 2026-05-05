@@ -12,6 +12,7 @@ import {
   AutoModelForAudioFrameClassification,
   AutoProcessor,
   AutoTokenizer,
+  Tensor,
   WhisperTextStreamer,
   read_audio,
 } from '@huggingface/transformers';
@@ -35,6 +36,12 @@ type TensorLike = {
   dims: number[];
 };
 
+const TRANSCRIPTION_CHUNK_SECONDS = 30;
+const TRANSCRIPTION_STRIDE_SECONDS = 5;
+// transformers.js advances each chunk by `window - 2 * stride` seconds
+// (see pipelines/automatic-speech-recognition.js).
+const TRANSCRIPTION_CHUNK_ADVANCE_SECONDS =
+  TRANSCRIPTION_CHUNK_SECONDS - 2 * TRANSCRIPTION_STRIDE_SECONDS;
 const DIARIZATION_CHUNK_SECONDS = 60;
 const DIARIZATION_MIN_CHUNK_SECONDS = 0.25;
 const DIARIZATION_OVERLAP_SECONDS = 30;
@@ -136,12 +143,101 @@ export class Engine {
   }
 
   /**
+   * Detects the spoken language of an audio sample using the active multilingual
+   * Whisper model. Returns an ISO language code (e.g. 'en', 'nl') or null if the
+   * active model is English-only or detection fails.
+   */
+  async detectAudioLanguage(
+    meetingAudio: MeetingAudio,
+    options: { sampleSeconds?: number; debug?: (line: string) => void } = {},
+  ): Promise<string | null> {
+    const debug = options.debug;
+    const sampleSeconds = options.sampleSeconds ?? 30;
+    debug?.('[language-detection] loading Whisper pipeline...');
+    const pipeline = (await this.#getPipelineForActiveModel(
+      'transcription',
+    )) as AutomaticSpeechRecognitionPipeline;
+    const model = (pipeline as unknown as { model: any }).model;
+    const processor = (pipeline as unknown as { processor: any }).processor;
+    const generationConfig = model?.generation_config;
+    const langToId = generationConfig?.lang_to_id as
+      | Record<string, number>
+      | undefined;
+
+    if (!generationConfig?.is_multilingual || !langToId) {
+      debug?.(
+        '[language-detection] active Whisper model is English-only or lacks language tokens; skipping.',
+      );
+      return null;
+    }
+
+    const sampleRate =
+      processor.feature_extractor?.config?.sampling_rate ?? 16_000;
+    const readAudio = read_audio as unknown as (
+      input: unknown,
+      sampleRate: number,
+    ) => Promise<Float32Array>;
+    const rawAudio = await this.#withAudioInput(meetingAudio, (audioInput) =>
+      audioInput instanceof Float32Array
+        ? Promise.resolve(audioInput)
+        : readAudio(audioInput, sampleRate),
+    );
+    const audio = this.#sanitizeAudioSamples(rawAudio);
+
+    if (audio.length === 0) {
+      debug?.('[language-detection] no audio samples; skipping.');
+      return null;
+    }
+
+    const sampleLength = Math.min(
+      audio.length,
+      Math.floor(sampleSeconds * sampleRate),
+    );
+    const audioSample = audio.subarray(0, sampleLength);
+    debug?.(
+      `[language-detection] using ${(sampleLength / sampleRate).toFixed(2)}s audio sample.`,
+    );
+
+    const inputs = await processor(audioSample);
+    const sotToken = generationConfig.decoder_start_token_id;
+    const decoderInputIds = new Tensor(
+      'int64',
+      BigInt64Array.from([BigInt(sotToken)]),
+      [1, 1],
+    );
+    const output = (await model.generate({
+      ...inputs,
+      decoder_input_ids: decoderInputIds,
+      max_new_tokens: 1,
+    })) as TensorLike;
+
+    const tokens = Array.from(output.data);
+    const langTokenId = Number(tokens[tokens.length - 1]);
+    const langToken = Object.keys(langToId).find(
+      (key) => langToId[key] === langTokenId,
+    );
+
+    if (langToken === undefined) {
+      debug?.(
+        `[language-detection] no language token matches id ${langTokenId}.`,
+      );
+      return null;
+    }
+
+    const language = langToken.replace(/^<\|/, '').replace(/\|>$/, '');
+    debug?.(`[language-detection] detected language: ${language}`);
+    return language;
+  }
+
+  /**
    * Generates a transcript of a given audio file.
    */
   async transcribeAudio(
     meetingAudio: MeetingAudio,
     fragmentCallback: (fragments: TimestampedText[]) => void,
     debug?: (line: string) => void,
+    language?: string,
+    task?: 'transcribe' | 'translate',
   ): Promise<string> {
     debug?.(
       `[transcription] input ${this.#describeMeetingAudio(meetingAudio)}`,
@@ -155,6 +251,11 @@ export class Engine {
     const streamedFragments: TimestampedText[] = [];
     let pendingStreamedText = '';
     let currentChunkStartSeconds = 0;
+    // The Whisper streamer's on_chunk_start/on_chunk_end fire per
+    // timestamp-token pair (segment-level). The reliable per-audio-chunk
+    // boundary is on_finalize, which fires once per model.generate() call
+    // (one call per 30s audio chunk).
+    let audioChunkIndex = 0;
     const tokenizer = (pipeline as { tokenizer?: unknown }).tokenizer;
 
     debug?.(
@@ -193,11 +294,17 @@ export class Engine {
         fragmentCallback(streamedFragments);
       },
       on_chunk_start: (time) => {
-        currentChunkStartSeconds = time;
-        debug?.(`[transcription] streamer chunk start ${time.toFixed(2)}s.`);
+        const chunkBaseSeconds =
+          audioChunkIndex * TRANSCRIPTION_CHUNK_ADVANCE_SECONDS;
+        currentChunkStartSeconds = chunkBaseSeconds + time;
+        debug?.(
+          `[transcription] streamer segment start local=${time.toFixed(2)}s; absolute=${currentChunkStartSeconds.toFixed(2)}s (audio chunk #${audioChunkIndex}).`,
+        );
       },
       on_chunk_end: (time) => {
-        debug?.(`[transcription] streamer chunk end ${time.toFixed(2)}s.`);
+        debug?.(
+          `[transcription] streamer segment end local=${time.toFixed(2)}s.`,
+        );
       },
       on_finalize: () => {
         const finalText = pendingStreamedText.trim();
@@ -212,7 +319,10 @@ export class Engine {
           pendingStreamedText = '';
         }
 
-        debug?.('[transcription] streamer finalized.');
+        audioChunkIndex += 1;
+        debug?.(
+          `[transcription] audio chunk finalized; advancing to chunk #${audioChunkIndex}.`,
+        );
       },
     });
     const result = (await this.#withAudioInput(
@@ -223,10 +333,12 @@ export class Engine {
         );
 
         return pipeline(audioInput, {
-          chunk_length_s: 30,
-          stride_length_s: 5,
+          chunk_length_s: TRANSCRIPTION_CHUNK_SECONDS,
+          stride_length_s: TRANSCRIPTION_STRIDE_SECONDS,
           return_timestamps: true,
           streamer,
+          ...(language !== undefined ? { language } : {}),
+          ...(task !== undefined ? { task } : {}),
         });
       },
       debug,
