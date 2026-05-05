@@ -25,7 +25,7 @@ export function useMeetingsController({
   const recorderRef = useRef<AudioRecorder | null>(null);
   const meetingsRepoRef = useRef<MeetingsRepository | null>(null);
   const [status, setStatus] = useState<RecorderStatus>('idle');
-  const [message, setMessage] = useState('Opening OPFS meetings folder...');
+  const [message, setMessage] = useState('');
   const [meetings, setMeetings] = useState<StoredMeetingSummary[]>([]);
   const [artifactRevision, setArtifactRevision] = useState(0);
   const [meetingUrls, setMeetingUrls] = useState<Record<string, string>>({});
@@ -99,7 +99,7 @@ export function useMeetingsController({
         recorderRef.current = new AudioRecorder(meetingsDir);
         await refreshMeetings(repo);
         setStatus('ready');
-        setMessage('Ready. Meetings will be saved to OPFS/meetings.');
+        setMessage('');
       } catch (error) {
         if (!isMounted) {
           return;
@@ -226,6 +226,7 @@ export function useMeetingsController({
     }
 
     try {
+      setMessage('');
       await repo.updateMetadata(id, patch);
       await refreshMeetings(repo);
     } catch (error) {
@@ -243,11 +244,10 @@ export function useMeetingsController({
     }
 
     try {
-      setMessage('Requesting microphone access...');
+      setMessage('');
       await recorder.start();
       setRecordingMeetingId(meetingId);
       setStatus('recording');
-      setMessage('Recording. Stop to attach the audio to the meeting.');
     } catch (error) {
       setStatus('error');
       setMessage(
@@ -267,7 +267,7 @@ export function useMeetingsController({
 
     try {
       setStatus('saving');
-      setMessage('Saving recording...');
+      setMessage('');
       const recording = await recorder.stop();
       try {
         await repo.directoryHandle.removeEntry(recording.fileName);
@@ -275,7 +275,7 @@ export function useMeetingsController({
         // Ignore; scratch file may already be gone.
       }
 
-      const summary = await repo.attachRecording(meetingId, {
+      await repo.attachRecording(meetingId, {
         blob: recording.blob,
         mimeType: recording.mimeType,
         extension: mimeTypeToExtension(recording.mimeType),
@@ -286,7 +286,7 @@ export function useMeetingsController({
       await refreshMeetings(repo);
       setRecordingMeetingId(null);
       setStatus('ready');
-      setMessage(`Attached recording to "${summary.name}".`);
+      setMessage('');
     } catch (error) {
       setRecordingMeetingId(null);
       setStatus('error');
@@ -305,7 +305,7 @@ export function useMeetingsController({
 
     try {
       setStatus('saving');
-      setMessage(`Importing ${file.name}...`);
+      setMessage('');
 
       const mimeType = file.type || 'application/octet-stream';
       const extensionFromName = file.name.includes('.')
@@ -316,7 +316,7 @@ export function useMeetingsController({
           ? extensionFromName
           : mimeTypeToExtension(mimeType);
 
-      const summary = await repo.attachRecording(meetingId, {
+      await repo.attachRecording(meetingId, {
         blob: file,
         mimeType,
         extension,
@@ -326,7 +326,7 @@ export function useMeetingsController({
 
       await refreshMeetings(repo);
       setStatus('ready');
-      setMessage(`Imported ${file.name} into "${summary.name}".`);
+      setMessage('');
     } catch (error) {
       setStatus('error');
       setMessage(
@@ -350,7 +350,7 @@ export function useMeetingsController({
 
     try {
       setStatus('saving');
-      setMessage(`Deleting meeting "${meeting.name}"...`);
+      setMessage('');
       await repo.delete(meeting.id);
 
       dropCachedMeetingUrl(meeting.id);
@@ -366,7 +366,7 @@ export function useMeetingsController({
 
       await refreshMeetings(repo);
       setStatus('ready');
-      setMessage(`Deleted meeting "${meeting.name}".`);
+      setMessage('');
     } catch (error) {
       setStatus('error');
       setMessage(
@@ -381,7 +381,7 @@ export function useMeetingsController({
     recorderRef.current?.cancel();
     setRecordingMeetingId(null);
     setStatus('ready');
-    setMessage('Recording canceled. No audio was attached.');
+    setMessage('');
   }
 
   function dropCachedMeetingUrl(meetingId: string) {
