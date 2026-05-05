@@ -27,6 +27,7 @@ import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
 import styles from './app.module.css';
 import type {
+  DownloadProgressState,
   EngineStatus,
   LiveTranscriptSegment,
   RecorderStatus,
@@ -52,6 +53,8 @@ import {
   getQuantizedVersionName,
   type DirectModelDownload,
 } from './services/model-downloads';
+import { DownloadProgressDialog } from './components/download-progress-dialog';
+import { EngineLogDialog } from './components/engine-log-dialog';
 
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type NavigatorWithWebGpu = Navigator & {
@@ -59,16 +62,6 @@ type NavigatorWithWebGpu = Navigator & {
     requestAdapter(): Promise<unknown>;
   };
 };
-
-interface DownloadProgressState {
-  title: string;
-  currentFile: string;
-  fileIndex: number;
-  fileCount: number;
-  loadedBytes: number;
-  totalBytes: number | null;
-  status: 'downloading' | 'saving' | 'complete' | 'error';
-}
 
 const fileSystem = new FileSystem();
 
@@ -248,7 +241,6 @@ export function App() {
     string | null
   >(null);
   const [webGpuSupport, setWebGpuSupport] = useState<WebGpuSupport>('checking');
-  const engineLogRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const activePage = resolveActivePage(location.pathname);
@@ -278,18 +270,6 @@ export function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (!engineDialogOpen) {
-      return;
-    }
-
-    const node = engineLogRef.current;
-
-    if (node !== null) {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [engineDialogOpen, engineLog]);
 
   async function refreshMeetings(repo = meetingsRepoRef.current) {
     if (repo === null) {
@@ -1562,104 +1542,25 @@ export function App() {
       </section>
 
       {engineDialogOpen ? (
-        <div
-          className={styles.downloadOverlay}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Transcription progress"
-        >
-          <section className={styles.downloadDialog}>
-            <div className={styles.listHeader}>
-              <div>
-                <p className={styles.label}>
-                  {engineDialogMode === 'transcription'
-                    ? 'Transcription'
-                    : 'Engine'}
-                </p>
-                <h2>
-                  {engineDialogMode === 'transcription'
-                    ? 'Transcribing'
-                    : 'Processing'}{' '}
-                  {meetings.find((m) => m.id === selectedMeetingId)?.name ?? ''}
-                </h2>
-              </div>
-              <span data-state={engineStatus}>{engineStatus}</span>
-            </div>
-
-            {engineDialogMode === 'transcription' ? (
-              <div className={styles.liveTranscript}>
-                <div className={styles.liveTranscriptHeader}>
-                  <strong>Live transcript</strong>
-                  <span>{liveTranscriptSegments.length} segments</span>
-                </div>
-                {liveTranscriptSegments.length === 0 ? (
-                  <p className={styles.empty}>Waiting for speech...</p>
-                ) : (
-                  <div className={styles.liveTranscriptBody}>
-                    {liveTranscriptSegments.map((segment, index) => (
-                      <p key={`${segment.startSeconds}-${index}`}>
-                        <span>{segment.text}</span>
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : null}
-
-            <div ref={engineLogRef} className={styles.engineLog}>
-              {engineLog.length === 0 ? (
-                <p className={styles.empty}>Waiting for output...</p>
-              ) : (
-                engineLog.map((line, index) => (
-                  <p key={`${index}-${line.slice(0, 32)}`}>{line}</p>
-                ))
-              )}
-            </div>
-
-            <button type="button" onClick={() => setEngineDialogOpen(false)}>
-              {engineStatus === 'processing' ? 'Hide' : 'Close'}
-            </button>
-          </section>
-        </div>
+        <EngineLogDialog
+          mode={engineDialogMode}
+          status={engineStatus}
+          meetingName={
+            meetings.find((meeting) => meeting.id === selectedMeetingId)?.name ?? ''
+          }
+          logLines={engineLog}
+          liveTranscriptSegments={liveTranscriptSegments}
+          onClose={() => setEngineDialogOpen(false)}
+        />
       ) : null}
 
       {downloadProgress !== null ? (
-        <div
-          className={styles.downloadOverlay}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Download progress"
-        >
-          <section className={styles.downloadDialog}>
-            <div className={styles.listHeader}>
-              <div>
-                <p className={styles.label}>Download</p>
-                <h2>{downloadProgress.title}</h2>
-              </div>
-              <span>{downloadProgress.status}</span>
-            </div>
-            <p className={styles.message}>
-              File {downloadProgress.fileIndex} of {downloadProgress.fileCount}:{' '}
-              {downloadProgress.currentFile}
-            </p>
-            <div className={styles.progressTrack}>
-              <div style={{ width: `${downloadPercent ?? 8}%` }} />
-            </div>
-            <p className={styles.progressMeta}>
-              {formatBytes(downloadProgress.loadedBytes)} /{' '}
-              {downloadProgress.totalBytes === null
-                ? 'unknown'
-                : formatBytes(downloadProgress.totalBytes)}
-              {downloadPercent === null ? '' : ` (${downloadPercent}%)`}
-            </p>
-            {downloadProgress.status === 'complete' ||
-            downloadProgress.status === 'error' ? (
-              <button type="button" onClick={() => setDownloadProgress(null)}>
-                Close
-              </button>
-            ) : null}
-          </section>
-        </div>
+        <DownloadProgressDialog
+          progress={downloadProgress}
+          percent={downloadPercent}
+          formatBytes={formatBytes}
+          onClose={() => setDownloadProgress(null)}
+        />
       ) : null}
     </main>
   );
