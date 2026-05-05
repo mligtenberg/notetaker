@@ -24,7 +24,7 @@ export class PipelineFactory {
   }
 
   #getDevice(manifest: ModelVersionManifestEntry) {
-    if (manifest.model === 'whisper') {
+    if (manifest.model === 'transcription') {
       return 'wasm';
     }
 
@@ -32,11 +32,11 @@ export class PipelineFactory {
   }
 
   #getPipelineType(manifest: ModelVersionManifestEntry): PipelineType {
-    if (manifest.model === 'whisper') {
+    if (manifest.model === 'transcription') {
       return 'automatic-speech-recognition';
     }
 
-    if (manifest.model === 'gemma4') {
+    if (manifest.model === 'language') {
       return 'text-generation';
     }
 

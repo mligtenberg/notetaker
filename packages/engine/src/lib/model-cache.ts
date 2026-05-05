@@ -129,10 +129,10 @@ export class ModelCache implements Cache {
 
   #isManagedModel(model: string | undefined): model is ManagedModel {
     return (
-      model === 'whisper' ||
-      model === 'pyannote' ||
-      model === 'gemma4' ||
-      model === 'wav2vec2'
+      model === 'transcription' ||
+      model === 'diarization' ||
+      model === 'language' ||
+      model === 'text-audio-sync'
     );
   }
 }

@@ -1,6 +1,26 @@
 import { FileSystem } from '@notetaker/filesystem';
 
-export type ManagedModel = 'whisper' | 'pyannote' | 'gemma4' | 'wav2vec2';
+export type ManagedModel =
+  | 'transcription'
+  | 'diarization'
+  | 'language'
+  | 'text-audio-sync';
+
+type LegacyManagedModel = 'whisper' | 'pyannote' | 'gemma4' | 'wav2vec2';
+
+const LEGACY_MODEL_NAME_MAP: Record<LegacyManagedModel, ManagedModel> = {
+  whisper: 'transcription',
+  pyannote: 'diarization',
+  gemma4: 'language',
+  wav2vec2: 'text-audio-sync',
+};
+
+const MODEL_DIRECTORY_NAMES: Record<ManagedModel, string> = {
+  transcription: 'whisper',
+  diarization: 'pyannote',
+  language: 'gemma4',
+  'text-audio-sync': 'wav2vec2',
+};
 
 export interface ModelVersionManifestEntry {
   model: ManagedModel;
@@ -49,10 +69,10 @@ interface ModelManifest {
 
 const MANIFEST_FILE_NAME = 'manifest.json';
 const MODEL_NAMES = [
-  'whisper',
-  'pyannote',
-  'gemma4',
-  'wav2vec2',
+  'transcription',
+  'diarization',
+  'language',
+  'text-audio-sync',
 ] as const satisfies readonly ManagedModel[];
 
 export class ModelManager {
@@ -186,7 +206,7 @@ export class ModelManager {
 
     delete manifest.models[model][version];
     await this.modelsDirectoryHandle
-      .getDirectoryHandle(model)
+      .getDirectoryHandle(MODEL_DIRECTORY_NAMES[model])
       .then((modelDirectory) => modelDirectory.removeEntry(version, { recursive: true }))
       .catch((error: unknown) => {
         if (!(error instanceof DOMException) || error.name !== 'NotFoundError') {
@@ -259,7 +279,10 @@ export class ModelManager {
   }
 
   async #getModelDirectory(model: ManagedModel): Promise<FileSystemDirectoryHandle> {
-    return this.modelsDirectoryHandle.getDirectoryHandle(model, { create: true });
+    return this.modelsDirectoryHandle.getDirectoryHandle(
+      MODEL_DIRECTORY_NAMES[model],
+      { create: true },
+    );
   }
 
   async #getVersionDirectory(
@@ -305,10 +328,10 @@ export class ModelManager {
     return {
       schemaVersion: 1,
       models: {
-        whisper: {},
-        pyannote: {},
-        gemma4: {},
-        wav2vec2: {},
+        transcription: {},
+        diarization: {},
+        language: {},
+        'text-audio-sync': {},
       },
     };
   }
@@ -318,17 +341,26 @@ export class ModelManager {
       return this.#createEmptyManifest();
     }
 
-    const partialManifest = manifest as Partial<ModelManifest>;
+    const partialManifest = manifest as {
+      models?: Partial<Record<string, Record<string, ModelVersionManifestEntry>>>;
+    };
     const normalized = this.#createEmptyManifest();
 
     for (const model of MODEL_NAMES) {
-      const versions = partialManifest.models?.[model] ?? {};
+      const legacyKey = (Object.keys(LEGACY_MODEL_NAME_MAP) as LegacyManagedModel[]).find(
+        (key) => LEGACY_MODEL_NAME_MAP[key] === model,
+      );
+      const versions =
+        partialManifest.models?.[model] ??
+        (legacyKey ? partialManifest.models?.[legacyKey] : undefined) ??
+        {};
 
       normalized.models[model] = Object.fromEntries(
         Object.entries(versions).map(([version, entry]) => [
           version,
           {
             ...entry,
+            model,
             modelName: entry.modelName ?? entry.version,
           },
         ]),

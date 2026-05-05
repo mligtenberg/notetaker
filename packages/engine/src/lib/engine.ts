@@ -148,7 +148,7 @@ export class Engine {
     );
     debug?.('[transcription] loading Whisper pipeline...');
     const pipeline = (await this.#getPipelineForActiveModel(
-      'whisper',
+      'transcription',
     )) as AutomaticSpeechRecognitionPipeline;
     debug?.('[transcription] Whisper pipeline ready.');
     let emittedLiveTranscript = false;
@@ -276,7 +276,7 @@ export class Engine {
       );
     }
 
-    const activeModel = await this.#requireActiveModel('pyannote');
+    const activeModel = await this.#requireActiveModel('diarization');
     const modelId = `${activeModel.manifest.model}/${activeModel.manifest.version}`;
     const processor = (await AutoProcessor.from_pretrained(modelId)) as any;
     const model = (await AutoModelForAudioFrameClassification.from_pretrained(
@@ -804,7 +804,7 @@ export class Engine {
     debug?: (line: string) => void,
     inputSampleRate?: number,
   ): Promise<TimestampedWord[]> {
-    const activeModel = await this.#requireActiveModel('wav2vec2');
+    const activeModel = await this.#requireActiveModel('text-audio-sync');
     const transcriptWords = transcript.match(/\S+/g) ?? [];
 
     if (transcriptWords.length === 0) {
@@ -1182,7 +1182,7 @@ export class Engine {
       return new Map();
     }
 
-    const activeModel = await this.#requireActiveModel('gemma4');
+    const activeModel = await this.#requireActiveModel('language');
 
     try {
       const pipeline = (await this.pipelineFactory.getPipeline(

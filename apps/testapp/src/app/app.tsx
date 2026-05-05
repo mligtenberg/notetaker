@@ -103,25 +103,25 @@ interface DownloadProgressState {
 
 const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
   {
-    model: 'whisper',
-    label: 'Whisper',
+    model: 'transcription',
+    label: 'Transcription',
     description:
       'Transcription model for Whisper and Faster-Whisper downloads.',
   },
   {
-    model: 'pyannote',
-    label: 'Pyannote',
+    model: 'diarization',
+    label: 'Diarization',
     description: 'Speaker diarization model',
   },
   {
-    model: 'gemma4',
-    label: 'Gemma 4',
+    model: 'language',
+    label: 'Language',
     description:
       'Speaker naming model. Suggests ONNX Community Gemma 4 browser/WebGPU models.',
   },
   {
-    model: 'wav2vec2',
-    label: 'Wav2Vec2',
+    model: 'text-audio-sync',
+    label: 'Text-Audio Sync',
     description:
       'CTC ASR model for transcript-to-timecode alignment experiments.',
   },
@@ -269,7 +269,7 @@ function createPyannoteDownload(
     id: PYANNOTE_REPO,
     label,
     description,
-    model: 'pyannote',
+    model: 'diarization',
     quantization,
     files: ([...PYANNOTE_COMMON_FILES, [onnxFile, onnxSize]] as const).map(
       ([path, size]) => ({
@@ -311,7 +311,7 @@ const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
     label: 'Community-1 ONNX FP32',
     description:
       'Community ONNX export of pyannote/speaker-diarization-community-1: segmentation (~5.9 MB) + embedding (~26.5 MB). CC-BY-4.0, no HF token gate. Processor configs reused from segmentation-3.0 (same architecture).',
-    model: 'pyannote',
+    model: 'diarization',
     quantization: 'fp32',
     files: [
       {
@@ -356,7 +356,7 @@ const GEMMA_DOWNLOADS: DirectModelDownload[] = [
     label: 'ONNX Community E2B Q4',
     description:
       'Q4 ONNX text-generation files from ONNX Community for browser/WebGPU testing.',
-    model: 'gemma4',
+    model: 'language',
     quantization: 'q4',
     files: {
       'chat_template.jinja': 16317,
@@ -377,7 +377,7 @@ const GEMMA_DOWNLOADS: DirectModelDownload[] = [
     label: 'ONNX Community E4B Q4',
     description:
       'Q4 ONNX text-generation files from ONNX Community for larger browser/WebGPU testing.',
-    model: 'gemma4',
+    model: 'language',
     quantization: 'q4',
     files: {
       'chat_template.jinja': 16317,
@@ -402,7 +402,7 @@ const WAV2VEC2_DOWNLOADS: DirectModelDownload[] = [
     label: 'Base 960h ONNX FP32',
     description:
       'Full-precision Wav2Vec2 CTC model. Suitable for forced-alignment experiments, but alignment is not wired into the engine yet.',
-    model: 'wav2vec2',
+    model: 'text-audio-sync',
     quantization: 'fp32',
     files: {
       'config.json': 2157,
@@ -420,7 +420,7 @@ const WAV2VEC2_DOWNLOADS: DirectModelDownload[] = [
     label: 'Base 960h ONNX Q8',
     description:
       'Quantized Wav2Vec2 CTC model for smaller local alignment experiments. Alignment is not wired into the engine yet.',
-    model: 'wav2vec2',
+    model: 'text-audio-sync',
     quantization: 'q8',
     files: {
       'config.json': 2157,
@@ -612,7 +612,7 @@ function createWhisperOnnxDownload(
     id: repositoryId,
     label,
     description,
-    model: 'whisper',
+    model: 'transcription',
     quantization,
     files: Object.entries(fileSizes).map(([path, size]) => ({
       path,
@@ -1398,7 +1398,7 @@ export function App() {
         files,
         metadata: {
           title: download.label,
-          format: download.model === 'gemma4' ? 'direct-hugging-face' : 'onnx',
+          format: download.model === 'language' ? 'direct-hugging-face' : 'onnx',
           huggingFaceModelId: download.id,
           quantization: download.quantization,
           sourceUrls: download.files.map((file) => file.url),
@@ -1509,7 +1509,7 @@ export function App() {
       return;
     }
 
-    const activeWhisper = getActiveModelVersion('whisper');
+    const activeWhisper = getActiveModelVersion('transcription');
 
     if (activeWhisper === undefined) {
       setEngineMessage('Download a Whisper model first.');
@@ -1628,7 +1628,7 @@ export function App() {
       return;
     }
 
-    const activePyannote = getActiveModelVersion('pyannote');
+    const activePyannote = getActiveModelVersion('diarization');
 
     if (activePyannote === undefined) {
       setEngineMessage('Download a Pyannote model first.');
@@ -1752,7 +1752,7 @@ export function App() {
       return;
     }
 
-    if (getActiveModelVersion('wav2vec2') === undefined) {
+    if (getActiveModelVersion('text-audio-sync') === undefined) {
       setEngineMessage('Download a Wav2Vec2 model first.');
       return;
     }
@@ -1844,7 +1844,7 @@ export function App() {
       return;
     }
 
-    if (getActiveModelVersion('gemma4') === undefined) {
+    if (getActiveModelVersion('language') === undefined) {
       setEngineMessage('Download a Gemma 4 model first.');
       return;
     }
