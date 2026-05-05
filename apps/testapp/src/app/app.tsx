@@ -26,6 +26,11 @@ import { MeetingDetailPage } from './components/meeting-detail-page';
 import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
 import styles from './app.module.css';
+import {
+  SUGGESTED_MODEL_DOWNLOADS_CONFIG,
+  type SuggestedModelFileConfig,
+  type SuggestedModelScores,
+} from './suggested-model-downloads.config';
 
 interface LiveTranscriptSegment {
   text: string;
@@ -49,7 +54,7 @@ function resolveActivePage(pathname: string): AppPage {
     return segment;
   }
 
-  return 'models';
+  return 'meetings';
 }
 
 function resolveViewingMeetingId(pathname: string): string | null {
@@ -85,9 +90,11 @@ interface DirectModelFile {
 
 interface DirectModelDownload {
   id: string;
+  repositoryName: string;
   label: string;
   description: string;
   model: ManagedModel;
+  scores: SuggestedModelScores;
   quantization?: string;
   files: DirectModelFile[];
 }
@@ -128,313 +135,11 @@ const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
   },
 ];
 
-const WHISPER_ONNX_DOWNLOADS: DirectModelDownload[] = [
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-tiny',
-    'Tiny ONNX FP32',
-    'Current transformers.js full-precision ONNX tiny model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2243,
-      'generation_config.json': 3772,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282683,
-      'vocab.json': 1036584,
-      'onnx/encoder_model.onnx': 32904992,
-      'onnx/decoder_model_merged.onnx': 118553827,
-    },
-  ),
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-tiny',
-    'Tiny ONNX Q8',
-    'Current transformers.js quantized ONNX tiny model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2243,
-      'generation_config.json': 3772,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282683,
-      'vocab.json': 1036584,
-      'onnx/encoder_model_quantized.onnx': 10124990,
-      'onnx/decoder_model_merged_quantized.onnx': 30719241,
-    },
-    'q8',
-  ),
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-base',
-    'Base ONNX FP32',
-    'Current transformers.js full-precision ONNX base model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2243,
-      'generation_config.json': 3832,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282682,
-      'vocab.json': 1036584,
-      'onnx/encoder_model.onnx': 82468078,
-      'onnx/decoder_model_merged.onnx': 208521528,
-    },
-  ),
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-base',
-    'Base ONNX Q8',
-    'Current transformers.js quantized ONNX base model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2243,
-      'generation_config.json': 3832,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282682,
-      'vocab.json': 1036584,
-      'onnx/encoder_model_quantized.onnx': 23201314,
-      'onnx/decoder_model_merged_quantized.onnx': 53693315,
-    },
-    'q8',
-  ),
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-small',
-    'Small ONNX FP32',
-    'Current transformers.js full-precision ONNX small model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2227,
-      'generation_config.json': 3893,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282683,
-      'vocab.json': 1036584,
-      'onnx/encoder_model.onnx': 352825870,
-      'onnx/decoder_model_merged.onnx': 615324301,
-    },
-  ),
-  createWhisperOnnxDownload(
-    'onnx-community/whisper-small',
-    'Small ONNX Q8',
-    'Current transformers.js quantized ONNX small model.',
-    {
-      'added_tokens.json': 34604,
-      'config.json': 2227,
-      'generation_config.json': 3893,
-      'merges.txt': 493869,
-      'normalizer.json': 52666,
-      'preprocessor_config.json': 339,
-      'quantize_config.json': 10126,
-      'special_tokens_map.json': 2194,
-      'tokenizer.json': 2480466,
-      'tokenizer_config.json': 282683,
-      'vocab.json': 1036584,
-      'onnx/encoder_model_quantized.onnx': 92326160,
-      'onnx/decoder_model_merged_quantized.onnx': 156750845,
-    },
-    'q8',
-  ),
-];
-const PYANNOTE_REPO = 'onnx-community/pyannote-segmentation-3.0';
-const PYANNOTE_COMMON_FILES: [string, number][] = [
-  ['config.json', 408],
-  ['preprocessor_config.json', 158],
-];
-
-function createPyannoteDownload(
-  label: string,
-  description: string,
-  onnxFile: string,
-  onnxSize: number,
-  quantization: string,
-): DirectModelDownload {
-  return {
-    id: PYANNOTE_REPO,
-    label,
-    description,
-    model: 'diarization',
-    quantization,
-    files: ([...PYANNOTE_COMMON_FILES, [onnxFile, onnxSize]] as const).map(
-      ([path, size]) => ({
-        path,
-        url: buildHuggingFaceDownloadUrl(PYANNOTE_REPO, path),
-        type: path.endsWith('.onnx')
-          ? 'application/octet-stream'
-          : 'application/json',
-        size,
-      }),
-    ),
-  };
-}
-
-const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
-  createPyannoteDownload(
-    'Segmentation 3.0 FP32',
-    'Full-precision ONNX segmentation model (~5.7 MB). Best accuracy.',
-    'onnx/model.onnx',
-    5986908,
-    'fp32',
-  ),
-  createPyannoteDownload(
-    'Segmentation 3.0 Q8',
-    'Quantized ONNX segmentation model (~1.5 MB). Same accuracy, 4× smaller.',
-    'onnx/model_quantized.onnx',
-    1542308,
-    'q8',
-  ),
-  createPyannoteDownload(
-    'Segmentation 3.0 INT8',
-    'INT8-quantized ONNX segmentation model (~1.5 MB). Equivalent to Q8.',
-    'onnx/model_int8.onnx',
-    1542304,
-    'int8',
-  ),
-  {
-    id: 'altunenes/speaker-diarization-community-1-onnx',
-    label: 'Community-1 ONNX FP32',
-    description:
-      'Community ONNX export of pyannote/speaker-diarization-community-1: segmentation (~5.9 MB) + embedding (~26.5 MB). CC-BY-4.0, no HF token gate. Processor configs reused from segmentation-3.0 (same architecture).',
-    model: 'diarization',
-    quantization: 'fp32',
-    files: [
-      {
-        path: 'config.json',
-        url: buildHuggingFaceDownloadUrl(PYANNOTE_REPO, 'config.json'),
-        type: 'application/json',
-        size: 408,
-      },
-      {
-        path: 'preprocessor_config.json',
-        url: buildHuggingFaceDownloadUrl(
-          PYANNOTE_REPO,
-          'preprocessor_config.json',
-        ),
-        type: 'application/json',
-        size: 158,
-      },
-      {
-        path: 'onnx/model.onnx',
-        url: buildHuggingFaceDownloadUrl(
-          'altunenes/speaker-diarization-community-1-onnx',
-          'segmentation-community-1.onnx',
-        ),
-        type: 'application/octet-stream',
-        size: 5916375,
-      },
-      {
-        path: 'onnx/embedding_model.onnx',
-        url: buildHuggingFaceDownloadUrl(
-          'altunenes/speaker-diarization-community-1-onnx',
-          'embedding_model.onnx',
-        ),
-        type: 'application/octet-stream',
-        size: 26544032,
-      },
-    ],
-  },
-];
-const GEMMA_DOWNLOADS: DirectModelDownload[] = [
-  createDirectModelDownload({
-    id: 'onnx-community/gemma-4-E2B-it-ONNX',
-    label: 'ONNX Community E2B Q4',
-    description:
-      'Q4 ONNX text-generation files from ONNX Community for browser/WebGPU testing.',
-    model: 'language',
-    quantization: 'q4',
-    files: {
-      'chat_template.jinja': 16317,
-      'config.json': 5549,
-      'generation_config.json': 238,
-      'onnx/decoder_model_merged_q4.onnx': 647599,
-      'onnx/decoder_model_merged_q4.onnx_data': 1864102912,
-      'onnx/embed_tokens_q4.onnx': 5142,
-      'onnx/embed_tokens_q4.onnx_data': 1762656256,
-      'preprocessor_config.json': 43,
-      'processor_config.json': 1689,
-      'tokenizer.json': 19439251,
-      'tokenizer_config.json': 18807,
-    },
-  }),
-  createDirectModelDownload({
-    id: 'onnx-community/gemma-4-E4B-it-ONNX',
-    label: 'ONNX Community E4B Q4',
-    description:
-      'Q4 ONNX text-generation files from ONNX Community for larger browser/WebGPU testing.',
-    model: 'language',
-    quantization: 'q4',
-    files: {
-      'chat_template.jinja': 16317,
-      'config.json': 5741,
-      'generation_config.json': 238,
-      'onnx/decoder_model_merged_q4.onnx': 814829,
-      'onnx/decoder_model_merged_q4.onnx_data': 2093703168,
-      'onnx/decoder_model_merged_q4.onnx_data_1': 1286205440,
-      'onnx/embed_tokens_q4.onnx': 5134,
-      'onnx/embed_tokens_q4.onnx_data': 1839202304,
-      'onnx/embed_tokens_q4.onnx_data_1': 396361728,
-      'preprocessor_config.json': 43,
-      'processor_config.json': 1689,
-      'tokenizer.json': 19439251,
-      'tokenizer_config.json': 18807,
-    },
-  }),
-];
-const WAV2VEC2_DOWNLOADS: DirectModelDownload[] = [
-  createDirectModelDownload({
-    id: 'onnx-community/wav2vec2-base-960h-ONNX',
-    label: 'Base 960h ONNX FP32',
-    description:
-      'Full-precision Wav2Vec2 CTC model. Suitable for forced-alignment experiments, but alignment is not wired into the engine yet.',
-    model: 'text-audio-sync',
-    quantization: 'fp32',
-    files: {
-      'config.json': 2157,
-      'preprocessor_config.json': 215,
-      'quantize_config.json': 312,
-      'special_tokens_map.json': 96,
-      'tokenizer.json': 2187,
-      'tokenizer_config.json': 1178,
-      'vocab.json': 358,
-      'onnx/model.onnx': 377911891,
-    },
-  }),
-  createDirectModelDownload({
-    id: 'onnx-community/wav2vec2-base-960h-ONNX',
-    label: 'Base 960h ONNX Q8',
-    description:
-      'Quantized Wav2Vec2 CTC model for smaller local alignment experiments. Alignment is not wired into the engine yet.',
-    model: 'text-audio-sync',
-    quantization: 'q8',
-    files: {
-      'config.json': 2157,
-      'preprocessor_config.json': 215,
-      'quantize_config.json': 312,
-      'special_tokens_map.json': 96,
-      'tokenizer.json': 2187,
-      'tokenizer_config.json': 1178,
-      'vocab.json': 358,
-      'onnx/model_quantized.onnx': 95212816,
-    },
-  }),
-];
+const SUGGESTED_MODEL_DOWNLOADS = createSuggestedModelDownloads();
+const WHISPER_ONNX_DOWNLOADS = getSuggestedModelDownloads('transcription');
+const PYANNOTE_DOWNLOADS = getSuggestedModelDownloads('diarization');
+const GEMMA_DOWNLOADS = getSuggestedModelDownloads('language');
+const WAV2VEC2_DOWNLOADS = getSuggestedModelDownloads('text-audio-sync');
 
 const fileSystem = new FileSystem();
 
@@ -602,51 +307,45 @@ function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
   }));
 }
 
-function createWhisperOnnxDownload(
-  repositoryId: string,
-  label: string,
-  description: string,
-  fileSizes: Record<string, number>,
-  quantization = 'fp32',
-): DirectModelDownload {
-  return {
-    id: repositoryId,
-    label,
-    description,
-    model: 'transcription',
-    quantization,
-    files: Object.entries(fileSizes).map(([path, size]) => ({
-      path,
-      url: buildHuggingFaceDownloadUrl(repositoryId, path),
-      type: path.endsWith('.onnx')
-        ? 'application/octet-stream'
-        : 'application/json',
-      size,
-    })),
-  };
+function createSuggestedModelDownloads(): DirectModelDownload[] {
+  return Object.entries(SUGGESTED_MODEL_DOWNLOADS_CONFIG).flatMap(
+    ([repositoryId, repository]) =>
+      Object.entries(repository.quantizations).map(
+        ([quantization, variant]): DirectModelDownload => ({
+          id: repositoryId,
+          repositoryName: repository.name,
+          label: `${repository.name} ${variant.label}`,
+          description: variant.description,
+          model: repository.model,
+          scores: variant.scores,
+          quantization,
+          files: Object.entries(variant.files).map(([path, file]) => {
+            const fileConfig = normalizeSuggestedModelFileConfig(file);
+            const sourceRepository = fileConfig.sourceRepository ?? repositoryId;
+            const sourcePath = fileConfig.sourcePath ?? path;
+
+            return {
+              path,
+              url: buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
+              type: resolveModelFileType(path),
+              size: fileConfig.size,
+            };
+          }),
+        }),
+      ),
+  );
 }
 
-function createDirectModelDownload(options: {
-  id: string;
-  label: string;
-  description: string;
-  model: ManagedModel;
-  quantization?: string;
-  files: Record<string, number>;
-}): DirectModelDownload {
-  return {
-    id: options.id,
-    label: options.label,
-    description: options.description,
-    model: options.model,
-    quantization: options.quantization,
-    files: Object.entries(options.files).map(([path, size]) => ({
-      path,
-      url: buildHuggingFaceDownloadUrl(options.id, path),
-      type: resolveModelFileType(path),
-      size,
-    })),
-  };
+function normalizeSuggestedModelFileConfig(
+  file: number | SuggestedModelFileConfig,
+): SuggestedModelFileConfig {
+  return typeof file === 'number' ? { size: file } : file;
+}
+
+function getSuggestedModelDownloads(model: ManagedModel): DirectModelDownload[] {
+  return SUGGESTED_MODEL_DOWNLOADS.filter(
+    (download) => download.model === model,
+  );
 }
 
 function buildHuggingFaceDownloadUrl(
@@ -819,7 +518,7 @@ export function App() {
 
   useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
-      navigate('/models', { replace: true });
+      navigate('/meetings', { replace: true });
     }
   }, [location.pathname, navigate]);
 
@@ -1987,8 +1686,8 @@ export function App() {
         <nav className={styles.nav} aria-label="Test app sections">
           {(
             [
-              ['models', 'Models', `${activeModelCount}/4 active`],
               ['meetings', 'Meetings', `${meetings.length} saved`],
+              ['models', 'Model management', `${activeModelCount}/4 active`],
             ] as const
           ).map(([page, label, detail]) => (
             <NavLink
@@ -2025,39 +1724,35 @@ export function App() {
             modelTargets={MODEL_DOWNLOAD_TARGETS}
             downloadSections={[
               {
-                eyebrow: 'Direct ONNX downloads',
-                title: 'Whisper presets',
+                title: 'Transcription',
                 description:
-                  'These use ONNX Community Whisper repositories and download the encoder, merged decoder, tokenizer, and config files into the active Whisper slot.',
+                  'Converts meeting audio into written transcript text for notes, search, and review.',
                 downloads: WHISPER_ONNX_DOWNLOADS,
-                buttonLabel: 'Download ONNX',
+                buttonLabel: 'Download',
                 downloadingLabel: 'Downloading...',
               },
               {
-                eyebrow: 'Direct Pyannote ONNX downloads',
-                title: 'Token-free diarization building blocks',
+                title: 'Speaker detection',
                 description:
-                  'These community ONNX exports do not require a Hugging Face token. Download segmentation and embedding models to prepare a local diarization pipeline.',
+                  'Finds when speakers change so transcript segments can be grouped by participant.',
                 downloads: PYANNOTE_DOWNLOADS,
-                buttonLabel: 'Download Pyannote',
+                buttonLabel: 'Download',
                 downloadingLabel: 'Downloading...',
               },
               {
-                eyebrow: 'Direct Gemma 4 downloads',
-                title: 'ONNX Community Gemma 4 presets',
+                title: 'Speaker naming',
                 description:
-                  'These direct buttons include Q4 ONNX text-generation files from the ONNX Community Gemma 4 repositories.',
+                  'Infers likely participant names from meeting context and transcript content.',
                 downloads: GEMMA_DOWNLOADS,
-                buttonLabel: 'Download Gemma',
+                buttonLabel: 'Download',
                 downloadingLabel: 'Downloading...',
               },
               {
-                eyebrow: 'Direct Wav2Vec2 ONNX downloads',
-                title: 'CTC alignment presets',
+                title: 'Text-audio sync',
                 description:
-                  'These ONNX Community Wav2Vec2 CTC models can provide frame-level emissions for transcript-to-timecode alignment, but the alignment engine is not implemented yet.',
+                  'Aligns transcript text back to the audio timeline for precise timestamps and playback navigation.',
                 downloads: WAV2VEC2_DOWNLOADS,
-                buttonLabel: 'Download Wav2Vec2',
+                buttonLabel: 'Download',
                 downloadingLabel: 'Downloading...',
               },
             ]}

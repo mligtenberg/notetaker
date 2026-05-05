@@ -2,8 +2,8 @@ import type {
   ManagedModel,
   ModelVersionManifestEntry,
 } from '@notetaker/model-manager';
+import type { SuggestedModelScores } from '../suggested-model-downloads.config';
 import styles from '../app.module.css';
-import { ExportControls } from './export-controls';
 
 interface DirectModelFile {
   path: string;
@@ -14,11 +14,19 @@ interface DirectModelFile {
 
 interface DirectModelDownload {
   id: string;
+  repositoryName: string;
   label: string;
   description: string;
   model: ManagedModel;
+  scores: SuggestedModelScores;
   quantization?: string;
   files: DirectModelFile[];
+}
+
+interface RepositoryDownloadGroup {
+  id: string;
+  name: string;
+  downloads: DirectModelDownload[];
 }
 
 interface ModelDownloadTarget {
@@ -28,7 +36,6 @@ interface ModelDownloadTarget {
 }
 
 interface DownloadSection {
-  eyebrow: string;
   title: string;
   description: string;
   downloads: DirectModelDownload[];
@@ -73,6 +80,45 @@ export function ModelsPage({
   onRemoveModelVersion,
   formatBytes,
 }: ModelsPageProps) {
+  function groupDownloadsByRepository(
+    downloads: DirectModelDownload[],
+  ): RepositoryDownloadGroup[] {
+    const groups = new Map<string, RepositoryDownloadGroup>();
+
+    for (const download of downloads) {
+      const group = groups.get(download.id);
+
+      if (group === undefined) {
+        groups.set(download.id, {
+          id: download.id,
+          name: download.repositoryName,
+          downloads: [download],
+        });
+      } else {
+        group.downloads.push(download);
+      }
+    }
+
+    return [...groups.values()];
+  }
+
+  function renderScoreStars(score: number): string {
+    const fullStars = Math.floor(score);
+    const hasHalfStar = score % 1 !== 0;
+    const emptyStars = 5 - fullStars - (hasHalfStar ? 1 : 0);
+
+    return `${'★'.repeat(fullStars)}${hasHalfStar ? '½' : ''}${'☆'.repeat(emptyStars)}`;
+  }
+
+  function renderScore(label: string, score: number) {
+    return (
+      <span className={styles.variantScore} aria-label={`${label}: ${score} of 5`}>
+        <span>{label}</span>
+        <strong>{renderScoreStars(score)}</strong>
+      </span>
+    );
+  }
+
   return (
     <section className={styles.panel}>
       <div className={styles.listHeader}>
@@ -81,10 +127,6 @@ export function ModelsPage({
           <h2>Model manager</h2>
         </div>
         <div className={styles.resultHeaderActions}>
-          <ExportControls
-            json={{ modelVersions, modelTargets, downloadSections }}
-            jsonFileName="models.json"
-          />
           <span>
             {modelVersions.length} version
             {modelVersions.length === 1 ? '' : 's'}
@@ -96,40 +138,63 @@ export function ModelsPage({
       {downloadSections.map((section) => (
         <div className={styles.directDownloads} key={section.title}>
           <div>
-            <p className={styles.label}>{section.eyebrow}</p>
             <h3>{section.title}</h3>
             <p>{section.description}</p>
           </div>
-          <div className={styles.presetGrid}>
-            {section.downloads.map((download) => {
-              const downloadedVersion = getDirectDownloadVersion(download);
+          <div className={styles.repositoryGrid}>
+            {groupDownloadsByRepository(section.downloads).map((repository) => (
+              <article className={styles.repositoryCard} key={repository.id}>
+                <header>
+                  <strong>{repository.name}</strong>
+                  <span>{repository.id}</span>
+                </header>
+                <ul className={styles.variantList}>
+                  {repository.downloads.map((download) => {
+                    const downloadedVersion = getDirectDownloadVersion(download);
 
-              return (
-                <article key={getDirectDownloadKey(download)}>
-                  <strong>{download.label}</strong>
-                  <span>{download.id}</span>
-                  <span>{formatBytes(getKnownDownloadSize(download))}</span>
-                  {downloadedVersion !== undefined ? (
-                    <span className={styles.downloadedBadge}>downloaded</span>
-                  ) : null}
-                  <p>{download.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => onDownloadDirectModel(download)}
-                    disabled={
-                      downloadingModel !== null ||
-                      downloadedVersion !== undefined
-                    }
-                  >
-                    {downloadedVersion !== undefined
-                      ? 'Downloaded'
-                      : downloadingModel === download.model
-                        ? section.downloadingLabel
-                        : section.buttonLabel}
-                  </button>
-                </article>
-              );
-            })}
+                    return (
+                      <li key={getDirectDownloadKey(download)}>
+                        <div className={styles.variantDetails}>
+                          <div>
+                            <strong>{download.quantization ?? download.label}</strong>
+                            {downloadedVersion !== undefined ? (
+                              <span className={styles.downloadedBadge}>downloaded</span>
+                            ) : null}
+                          </div>
+                          <p>{download.description}</p>
+                          <span>{formatBytes(getKnownDownloadSize(download))}</span>
+                          <div className={styles.variantScores}>
+                            {renderScore('Speed', download.scores.speed)}
+                            {renderScore('Quality', download.scores.quality)}
+                            {renderScore('Size', download.scores.size)}
+                          </div>
+                        </div>
+                        {downloadedVersion !== undefined ? (
+                          <button
+                            type="button"
+                            className={styles.dangerButton}
+                            onClick={() => onRemoveModelVersion(downloadedVersion)}
+                            disabled={downloadingModel !== null}
+                          >
+                            Remove
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onDownloadDirectModel(download)}
+                            disabled={downloadingModel !== null}
+                          >
+                            {downloadingModel === download.model
+                              ? section.downloadingLabel
+                              : section.buttonLabel}
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </article>
+            ))}
           </div>
         </div>
       ))}
