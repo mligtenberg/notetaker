@@ -471,6 +471,25 @@
   margin: 0;
 }
 
+.settingsSubnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.settingsSubnav button {
+  background: transparent;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #cbd5e1;
+}
+
+.settingsSubnav button[data-active='true'] {
+  background: rgba(148, 184, 200, 0.12);
+  border-color: rgba(148, 184, 200, 0.5);
+  color: #a7f3d0;
+}
+
 .downloadedModels {
   border: 1px solid rgba(167, 243, 208, 0.14);
   border-radius: 12px;
@@ -612,6 +631,25 @@
 .repositoryCard header span {
   color: #9ab2bd;
   font-size: 0.82rem;
+}
+
+.repositoryMetaLine {
+  align-items: center;
+  color: #9ab2bd;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  gap: 0.35rem;
+}
+
+.repositoryLink {
+  color: #9ab2bd;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.repositoryLink:hover {
+  color: #cbd5e1;
 }
 
 .variantList {
@@ -1483,7 +1521,6 @@
 
   .fileList li,
   .listHeader,
-  .modelGrid,
   .presetGrid,
   .repositoryGrid,
   .variantList li,
@@ -1491,6 +1528,10 @@
   .engineControls,
   .searchRow {
     grid-template-columns: 1fr;
+  }
+
+  .settingsSubnav button {
+    width: 100%;
   }
 
   .listHeader {

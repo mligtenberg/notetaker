@@ -40,18 +40,22 @@ interface LiveTranscriptSegment {
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
-type AppPage = 'models' | 'meetings';
+type AppPage = 'meetings' | 'settings';
 
 const PAGE_PATHS: Record<AppPage, string> = {
-  models: '/models',
   meetings: '/meetings',
+  settings: '/settings/models',
 };
 
 function resolveActivePage(pathname: string): AppPage {
   const segment = pathname.split('/')[1] ?? '';
 
-  if (segment === 'models' || segment === 'meetings') {
+  if (segment === 'meetings') {
     return segment;
+  }
+
+  if (segment === 'settings') {
+    return 'settings';
   }
 
   return 'meetings';
@@ -79,6 +83,11 @@ interface ModelDownloadTarget {
   model: ManagedModel;
   label: string;
   description: string;
+}
+
+interface SettingsModelPage {
+  model: ManagedModel;
+  path: string;
 }
 
 interface DirectModelFile {
@@ -133,6 +142,13 @@ const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
     description:
       'CTC ASR model for transcript-to-timecode alignment experiments.',
   },
+];
+
+const SETTINGS_MODEL_PAGES: SettingsModelPage[] = [
+  { model: 'transcription', path: 'transcription' },
+  { model: 'diarization', path: 'diarization' },
+  { model: 'language', path: 'language' },
+  { model: 'text-audio-sync', path: 'text-audio-sync' },
 ];
 
 const SUGGESTED_MODEL_DOWNLOADS = createSuggestedModelDownloads();
@@ -348,6 +364,17 @@ function getSuggestedModelDownloads(model: ManagedModel): DirectModelDownload[] 
   );
 }
 
+function resolveSettingsModel(pathname: string): ManagedModel | null {
+  const parts = pathname.split('/');
+  if (parts[1] !== 'settings' || parts[2] !== 'models') {
+    return null;
+  }
+
+  const modelPath = parts[3] ?? '';
+  const match = SETTINGS_MODEL_PAGES.find((page) => page.path === modelPath);
+  return match?.model ?? null;
+}
+
 function buildHuggingFaceDownloadUrl(
   modelId: string,
   fileName: string,
@@ -513,12 +540,20 @@ export function App() {
   const navigate = useNavigate();
   const activePage = resolveActivePage(location.pathname);
   const viewingMeetingId = resolveViewingMeetingId(location.pathname);
+  const activeSettingsModel = resolveSettingsModel(location.pathname);
   const [downloadProgress, setDownloadProgress] =
     useState<DownloadProgressState | null>(null);
 
   useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
       navigate('/meetings', { replace: true });
+    }
+
+    if (
+      location.pathname === '/settings' ||
+      location.pathname === '/settings/models'
+    ) {
+      navigate('/settings/models/transcription', { replace: true });
     }
   }, [location.pathname, navigate]);
 
@@ -657,18 +692,6 @@ export function App() {
     }
 
     return version.version;
-  }
-
-  function getModelVersionDetail(version: ModelVersionManifestEntry): string {
-    const size = version.files.reduce((total, file) => total + file.size, 0);
-    const quantization =
-      version.quantization ?? version.metadata?.['quantization'];
-    const quantizationLabel =
-      typeof quantization === 'string' && quantization.length > 0
-        ? ` | ${quantization}`
-        : '';
-
-    return `${version.version}${quantizationLabel} | ${formatBytes(size)}`;
   }
 
   function getDirectDownloadKey(download: DirectModelDownload): string {
@@ -1683,11 +1706,11 @@ export function App() {
           <span>Notetaker Lab</span>
           <strong>Local meeting engine</strong>
         </div>
-        <nav className={styles.nav} aria-label="Test app sections">
+        <nav className={styles.nav} aria-label="Application sections">
           {(
             [
               ['meetings', 'Meetings', `${meetings.length} saved`],
-              ['models', 'Model management', `${activeModelCount}/4 active`],
+              ['settings', 'Settings', `${activeModelCount}/4 models ready`],
             ] as const
           ).map(([page, label, detail]) => (
             <NavLink
@@ -1705,18 +1728,18 @@ export function App() {
       <section className={styles.workspace}>
         <header className={styles.hero}>
           <h1>
-            {activePage === 'models'
-              ? 'Models'
-              : 'Meetings'}
+            {activePage === 'settings'
+              ? 'Settings'
+                : 'Meetings'}
           </h1>
           <p>
-            {activePage === 'models'
-              ? 'Download and activate the local Whisper, Pyannote, and Gemma models.'
-              : 'Capture, transcribe, and review meetings stored locally in OPFS.'}
+            {activePage === 'settings'
+                ? 'Manage local models used by the processing pipeline.'
+                : 'Create meetings, capture recordings, and keep notes organized in OPFS.'}
           </p>
         </header>
 
-        {activePage === 'models' ? (
+        {activePage === 'settings' ? (
           <ModelsPage
             modelVersions={modelVersions}
             modelMessage={modelMessage}
@@ -1724,6 +1747,7 @@ export function App() {
             modelTargets={MODEL_DOWNLOAD_TARGETS}
             downloadSections={[
               {
+                model: 'transcription',
                 title: 'Transcription',
                 description:
                   'Converts meeting audio into written transcript text for notes, search, and review.',
@@ -1732,6 +1756,7 @@ export function App() {
                 downloadingLabel: 'Downloading...',
               },
               {
+                model: 'diarization',
                 title: 'Speaker detection',
                 description:
                   'Finds when speakers change so transcript segments can be grouped by participant.',
@@ -1740,6 +1765,7 @@ export function App() {
                 downloadingLabel: 'Downloading...',
               },
               {
+                model: 'language',
                 title: 'Speaker naming',
                 description:
                   'Infers likely participant names from meeting context and transcript content.',
@@ -1748,6 +1774,7 @@ export function App() {
                 downloadingLabel: 'Downloading...',
               },
               {
+                model: 'text-audio-sync',
                 title: 'Text-audio sync',
                 description:
                   'Aligns transcript text back to the audio timeline for precise timestamps and playback navigation.',
@@ -1761,7 +1788,6 @@ export function App() {
             getDirectDownloadVersion={getDirectDownloadVersion}
             getModelVersions={getModelVersions}
             getModelVersionTitle={getModelVersionTitle}
-            getModelVersionDetail={getModelVersionDetail}
             onDownloadDirectModel={(download) =>
               void handleDownloadDirectModel(download)
             }
@@ -1771,6 +1797,13 @@ export function App() {
             onRemoveModelVersion={(version) =>
               void handleRemoveModelVersion(version)
             }
+            activeModel={activeSettingsModel ?? 'transcription'}
+            onSelectModelPage={(model) => {
+              const page = SETTINGS_MODEL_PAGES.find((item) => item.model === model);
+              if (page !== undefined) {
+                navigate(`/settings/models/${page.path}`);
+              }
+            }}
             formatBytes={formatBytes}
           />
         ) : null}
@@ -1843,6 +1876,9 @@ export function App() {
                     setEngineDialogMode(mode);
                     setEngineDialogOpen(true);
                   }}
+                  initialTab={
+                    'details'
+                  }
                   onBack={() => navigate('/meetings')}
                   formatBytes={formatBytes}
                   formatDate={formatDate}

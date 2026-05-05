@@ -133,6 +133,7 @@ interface MeetingDetailPageProps {
   onRunSpeakerNaming: () => void;
   onOpenLogging: (mode: 'engine' | 'transcription') => void;
   onBack: () => void;
+  initialTab?: TabKey;
   formatBytes: (size: number) => string;
   formatDate: (timestamp: number) => string;
   formatTimestamp: (seconds: number) => string;
@@ -162,11 +163,12 @@ export function MeetingDetailPage({
   onRunSpeakerNaming,
   onOpenLogging,
   onBack,
+  initialTab = 'details',
   formatBytes,
   formatDate,
   formatTimestamp,
 }: MeetingDetailPageProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>('details');
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [speakerNamesSaved, setSpeakerNamesSaved] = useState(
     meeting.artifacts['speaker-names'],
   );
@@ -181,6 +183,10 @@ export function MeetingDetailPage({
   useEffect(() => {
     setSpeakerNamesSaved(meeting.artifacts['speaker-names']);
   }, [meeting.id, meeting.artifacts]);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [meeting.id, initialTab]);
 
   useEffect(() => {
     setLoggingAvailableTab(null);

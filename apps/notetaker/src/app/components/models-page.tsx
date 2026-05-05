@@ -29,6 +29,10 @@ interface RepositoryDownloadGroup {
   downloads: DirectModelDownload[];
 }
 
+function getRepositoryUrl(repositoryId: string): string {
+  return `https://huggingface.co/${repositoryId}`;
+}
+
 interface ModelDownloadTarget {
   model: ManagedModel;
   label: string;
@@ -36,6 +40,7 @@ interface ModelDownloadTarget {
 }
 
 interface DownloadSection {
+  model: ManagedModel;
   title: string;
   description: string;
   downloads: DirectModelDownload[];
@@ -56,16 +61,17 @@ interface ModelsPageProps {
   ) => ModelVersionManifestEntry | undefined;
   getModelVersions: (model: ManagedModel) => ModelVersionManifestEntry[];
   getModelVersionTitle: (version: ModelVersionManifestEntry) => string;
-  getModelVersionDetail: (version: ModelVersionManifestEntry) => string;
   onDownloadDirectModel: (download: DirectModelDownload) => void;
   onSetActiveModelVersion: (model: ManagedModel, version: string) => void;
   onRemoveModelVersion: (version: ModelVersionManifestEntry) => void;
+  activeModel: ManagedModel;
+  onSelectModelPage: (model: ManagedModel) => void;
   formatBytes: (size: number) => string;
 }
 
 export function ModelsPage({
   modelVersions,
-  modelMessage,
+  modelMessage: _modelMessage,
   downloadingModel,
   modelTargets,
   downloadSections,
@@ -74,10 +80,11 @@ export function ModelsPage({
   getDirectDownloadVersion,
   getModelVersions,
   getModelVersionTitle,
-  getModelVersionDetail,
   onDownloadDirectModel,
   onSetActiveModelVersion,
   onRemoveModelVersion,
+  activeModel,
+  onSelectModelPage,
   formatBytes,
 }: ModelsPageProps) {
   function groupDownloadsByRepository(
@@ -119,11 +126,21 @@ export function ModelsPage({
     );
   }
 
+  const activeSection =
+    downloadSections.find((section) => section.model === activeModel) ??
+    downloadSections[0];
+
+  const activeTarget =
+    modelTargets.find((target) => target.model === activeSection?.model) ??
+    modelTargets[0];
+
+  const versions = activeTarget ? getModelVersions(activeTarget.model) : [];
+  const activeVersion = versions.find((version) => version.active);
+
   return (
     <section className={styles.panel}>
       <div className={styles.listHeader}>
         <div>
-          <p className={styles.label}>OPFS/models</p>
           <h2>Model manager</h2>
         </div>
         <div className={styles.resultHeaderActions}>
@@ -133,20 +150,67 @@ export function ModelsPage({
           </span>
         </div>
       </div>
-      <p className={styles.message}>{modelMessage}</p>
+      <div className={styles.settingsSubnav}>
+        {modelTargets.map((target) => (
+          <button
+            key={target.model}
+            type="button"
+            data-active={target.model === activeTarget?.model}
+            onClick={() => onSelectModelPage(target.model)}
+          >
+            {target.label}
+          </button>
+        ))}
+      </div>
 
-      {downloadSections.map((section) => (
-        <div className={styles.directDownloads} key={section.title}>
+      {activeSection !== undefined && activeTarget !== undefined ? (
+        <div className={styles.directDownloads} key={activeSection.title}>
           <div>
-            <h3>{section.title}</h3>
-            <p>{section.description}</p>
+            <h3>{activeSection.title}</h3>
+            <p>{activeSection.description}</p>
           </div>
+
+          <label className={styles.engineModelPicker}>
+            <span>Active version</span>
+            <select
+              value={activeVersion?.version ?? ''}
+              onChange={(event) =>
+                onSetActiveModelVersion(activeTarget.model, event.target.value)
+              }
+              disabled={versions.length === 0 || downloadingModel !== null}
+            >
+              <option value="">
+                {versions.length === 0
+                  ? 'No downloaded versions'
+                  : 'Choose an active version'}
+              </option>
+              {versions.map((version) => (
+                <option
+                  key={`${activeTarget.model}-${version.version}`}
+                  value={version.version}
+                >
+                  {getModelVersionTitle(version)}
+                  {version.active ? ' (active)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <div className={styles.repositoryGrid}>
-            {groupDownloadsByRepository(section.downloads).map((repository) => (
+            {groupDownloadsByRepository(activeSection.downloads).map((repository) => (
               <article className={styles.repositoryCard} key={repository.id}>
                 <header>
                   <strong>{repository.name}</strong>
-                  <span>{repository.id}</span>
+                  <div className={styles.repositoryMetaLine}>
+                    <a
+                      href={getRepositoryUrl(repository.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={styles.repositoryLink}
+                    >
+                      {repository.id}
+                    </a>
+                  </div>
                 </header>
                 <ul className={styles.variantList}>
                   {repository.downloads.map((download) => {
@@ -185,8 +249,8 @@ export function ModelsPage({
                             disabled={downloadingModel !== null}
                           >
                             {downloadingModel === download.model
-                              ? section.downloadingLabel
-                              : section.buttonLabel}
+                              ? activeSection.downloadingLabel
+                              : activeSection.buttonLabel}
                           </button>
                         )}
                       </li>
@@ -197,81 +261,7 @@ export function ModelsPage({
             ))}
           </div>
         </div>
-      ))}
-
-      <div className={styles.modelGrid}>
-        {modelTargets.map((target) => {
-          const versions = getModelVersions(target.model);
-          const activeModel = versions.find((version) => version.active);
-
-          return (
-            <article className={styles.modelCard} key={target.model}>
-              <div>
-                <strong>{target.label}</strong>
-                <span>{target.description}</span>
-                <span>
-                  Active:{' '}
-                  {activeModel === undefined
-                    ? 'none'
-                    : getModelVersionTitle(activeModel)}
-                </span>
-              </div>
-              <label className={styles.engineModelPicker}>
-                <span>Set active version</span>
-                <select
-                  value={activeModel?.version ?? ''}
-                  onChange={(event) =>
-                    onSetActiveModelVersion(target.model, event.target.value)
-                  }
-                  disabled={versions.length === 0 || downloadingModel !== null}
-                >
-                  <option value="">
-                    {versions.length === 0
-                      ? 'No downloaded versions'
-                      : 'Choose an active version'}
-                  </option>
-                  {versions.map((version) => (
-                    <option
-                      key={`${target.model}-${version.version}`}
-                      value={version.version}
-                    >
-                      {getModelVersionTitle(version)}
-                      {version.active ? ' (active)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {versions.length > 0 ? (
-                <ul className={styles.modelVersionList}>
-                  {versions.map((version) => (
-                    <li key={`${version.model}-${version.version}`}>
-                      <div>
-                        <strong>{getModelVersionTitle(version)}</strong>
-                        <span>{getModelVersionDetail(version)}</span>
-                        <span>
-                          {version.model}
-                          {version.active ? ' | active' : ''}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        className={styles.dangerButton}
-                        onClick={() => onRemoveModelVersion(version)}
-                        disabled={downloadingModel !== null}
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className={styles.empty}>No models downloaded yet.</p>
-              )}
-            </article>
-          );
-        })}
-      </div>
+      ) : null}
     </section>
   );
 }
