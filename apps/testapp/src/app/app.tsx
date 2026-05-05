@@ -1658,6 +1658,12 @@ export function App() {
     setEngineLog([`Starting diarization of ${selectedMeeting.name}.`]);
 
     try {
+      await repo.deleteArtifact(selectedMeeting.id, 'diarization');
+      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
+      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
+
       const audioFile = await repo.loadRecording(selectedMeeting.id);
       setEngineLog((current) => [
         ...current,
@@ -1780,6 +1786,11 @@ export function App() {
     setEngineLog([`Starting word-sync for ${meeting.name}.`]);
 
     try {
+      await repo.deleteArtifact(meetingId, 'word-sync');
+      await repo.deleteArtifact(meetingId, 'speaker-names');
+      await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
+
       const transcript = await repo.loadArtifact<Transcript>(
         meetingId,
         'transcript',
@@ -1872,6 +1883,10 @@ export function App() {
     setEngineLog([`Starting speaker naming for ${meeting.name}.`]);
 
     try {
+      await repo.deleteArtifact(meetingId, 'speaker-names');
+      await refreshMeetings(repo);
+      setArtifactRevision((current) => current + 1);
+
       const transcript = await repo.loadArtifact<Transcript>(
         meetingId,
         'transcript',
