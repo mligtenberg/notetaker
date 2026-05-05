@@ -10,16 +10,7 @@
       "path": "./packages/filesystem"
     },
     {
-      "path": "./apps/testapp-e2e"
-    },
-    {
-      "path": "./apps/testapp"
-    },
-    {
-      "path": "./apps/notekeeper-e2e"
-    },
-    {
-      "path": "./apps/notekeeper"
+      "path": "./apps/notetaker"
     },
     {
       "path": "./packages/model-manager"

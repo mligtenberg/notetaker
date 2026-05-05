@@ -9,7 +9,7 @@ const crossOriginIsolationHeaders = {
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
-  cacheDir: '../../node_modules/.vite/apps/testapp',
+  cacheDir: '../../node_modules/.vite/apps/notetaker',
   server: {
     port: 4200,
     host: 'localhost',
