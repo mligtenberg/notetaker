@@ -1492,27 +1492,29 @@
   color: #e6edf7;
 }
 
-.tabs button[data-status='completed']::before {
-  background: #4ade80;
-  border-radius: 999px;
-  content: '';
-  display: inline-block;
-  height: 0.4rem;
-  width: 0.4rem;
-}
-
-.tabs button[data-status='pending']::before {
-  background: rgba(148, 163, 184, 0.4);
-  border-radius: 999px;
-  content: '';
-  display: inline-block;
-  height: 0.4rem;
-  width: 0.4rem;
-}
-
 .tabs button[data-active='true'] {
   border-bottom-color: #7d9aa8;
   color: #e6edf7;
+}
+
+.trafficLight {
+  border-radius: 999px;
+  display: inline-block;
+  height: 0.4rem;
+  width: 0.4rem;
+}
+
+.trafficLight[data-status='completed'] {
+  background: #4ade80;
+}
+
+.trafficLight[data-status='pending'] {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+.tabPrefix {
+  display: inline-flex;
+  align-items: center;
 }
 
 @media (max-width: 700px) {

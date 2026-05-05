@@ -20,6 +20,8 @@ import styles from '../../app.module.css';
 import { Card } from '../common/card';
 import { ExportControls } from './export-controls';
 import { Page } from '../common/page';
+import { type MeetingTab } from '../../app-routing';
+import { MeetingTabs } from './meeting-tabs';
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
@@ -50,7 +52,7 @@ type SpeakerContextMenuMode = 'menu' | 'rename' | 'merge' | 'edit';
 interface LiveTranscriptSegment {
   text: string;
   startSeconds: number;
-  endSeconds: number;
+  endSeconds: number,
 }
 
 interface WordAssignmentPopoverState {
@@ -58,40 +60,14 @@ interface WordAssignmentPopoverState {
   wordIndex: number;
   wordTimestampInMs: number;
   x: number;
-  y: number;
+  y: number,
 }
 
 interface TranscriptSegmentMenuState {
   segmentIndex: number;
   x: number;
-  y: number;
+  y: number,
 }
-
-type TabKey =
-  | 'details'
-  | 'recording'
-  | 'transcript'
-  | 'diarization'
-  | 'word-sync'
-  | 'speaker-names';
-
-const TAB_LABELS: Record<TabKey, string> = {
-  details: 'Details',
-  recording: 'Recording',
-  transcript: 'Transcript',
-  diarization: 'Diarization',
-  'word-sync': 'Word sync',
-  'speaker-names': 'Speaker names',
-};
-
-const TABS: TabKey[] = [
-  'details',
-  'recording',
-  'transcript',
-  'diarization',
-  'word-sync',
-  'speaker-names',
-];
 
 interface MeetingDetailPageProps {
   meeting: StoredMeetingSummary;
@@ -135,7 +111,7 @@ interface MeetingDetailPageProps {
   onRunSpeakerNaming: () => void;
   onOpenLogging: (mode: 'engine' | 'transcription') => void;
   onBack: () => void;
-  initialTab?: TabKey;
+  activeTab?: MeetingTab;
   formatBytes: (size: number) => string;
   formatDate: (timestamp: number) => string;
   formatTimestamp: (seconds: number) => string;
@@ -165,16 +141,15 @@ export function MeetingDetailPage({
   onRunSpeakerNaming,
   onOpenLogging,
   onBack,
-  initialTab = 'details',
+  activeTab = 'details',
   formatBytes,
   formatDate,
   formatTimestamp,
 }: MeetingDetailPageProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [speakerNamesSaved, setSpeakerNamesSaved] = useState(
     meeting.artifacts['speaker-names'],
   );
-  const [loggingAvailableTab, setLoggingAvailableTab] = useState<TabKey | null>(
+  const [loggingAvailableTab, setLoggingAvailableTab] = useState<MeetingTab | null>(
     null,
   );
   const recordingAudioRef = useRef<HTMLMediaElement | null>(null);
@@ -185,10 +160,6 @@ export function MeetingDetailPage({
   useEffect(() => {
     setSpeakerNamesSaved(meeting.artifacts['speaker-names']);
   }, [meeting.id, meeting.artifacts]);
-
-  useEffect(() => {
-    setActiveTab(initialTab);
-  }, [meeting.id, initialTab]);
 
   useEffect(() => {
     setLoggingAvailableTab(null);
@@ -239,22 +210,13 @@ export function MeetingDetailPage({
         </button>
       }
     >
-      <nav className={styles.tabs} aria-label="Meeting sections">
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            data-active={activeTab === tab}
-            data-status={getTabStatus(tab, meeting, speakerNamesSaved)}
-            onClick={() => {
-              setActiveTab(tab);
-              setLoggingAvailableTab(null);
-            }}
-          >
-            <span>{TAB_LABELS[tab]}</span>
-          </button>
-        ))}
-      </nav>
+      <MeetingTabs
+        meetingId={meeting.id}
+        activeTab={activeTab}
+        meeting={meeting}
+        speakerNamesSaved={speakerNamesSaved}
+        onTabChange={() => setLoggingAvailableTab(null)}
+      />
 
       {activeTab === 'details' ? (
         <DetailsTab
@@ -441,26 +403,6 @@ export function MeetingDetailPage({
       ) : null}
     </Page>
   );
-}
-
-function getTabStatus(
-  tab: TabKey,
-  meeting: StoredMeetingSummary,
-  speakerNamesSaved: boolean,
-): string {
-  if (tab === 'details') {
-    return 'completed';
-  }
-
-  if (tab === 'recording') {
-    return meeting.recordingFileName !== null ? 'completed' : 'pending';
-  }
-
-  if (tab === 'speaker-names') {
-    return speakerNamesSaved ? 'completed' : 'pending';
-  }
-
-  return meeting.artifacts[tab] ? 'completed' : 'pending';
 }
 
 interface ArtifactToolbarProps {
@@ -969,7 +911,7 @@ async function toggleRecordingPlayback(media: HTMLMediaElement): Promise<void> {
 }
 
 function getActiveMediaRef(
-  activeTab: TabKey,
+  activeTab: MeetingTab,
   refs: {
     recording: MediaElementRef;
     transcript: MediaElementRef;

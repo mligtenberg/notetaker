@@ -54,3 +54,37 @@ export function resolveSettingsModel(pathname: string): ManagedModel | null {
   const match = SETTINGS_MODEL_PAGES.find((page) => page.path === modelPath);
   return match?.model ?? null;
 }
+
+export type MeetingTab =
+  | 'details'
+  | 'recording'
+  | 'transcript'
+  | 'diarization'
+  | 'word-sync'
+  | 'speaker-names';
+
+export const MEETING_TABS: MeetingTab[] = [
+  'details',
+  'recording',
+  'transcript',
+  'diarization',
+  'word-sync',
+  'speaker-names',
+];
+
+export function resolveMeetingTab(pathname: string): MeetingTab {
+  const parts = pathname.split('/');
+  const tab = parts[3];
+  if (tab !== undefined && MEETING_TABS.includes(tab as MeetingTab)) {
+    return tab as MeetingTab;
+  }
+  return 'details';
+}
+
+export function getMeetingTabPath(meetingId: string, tab: MeetingTab): string {
+  return `/meetings/${meetingId}/${tab}`;
+}
+
+export function getModelPagePath(model: string): string {
+  return `/settings/models/${model}`;
+}

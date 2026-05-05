@@ -31,7 +31,7 @@ export function MeetingsPage({
   return (
     <Page
       title="Meetings"
-      subtitle="Create meetings, capture recordings, and keep notes organized in OPFS."
+      subtitle="Create meetings, capture recordings, and keep notes organized, locally."
       toolbar={
         <div className={styles.panelToolbar}>
           <button type="button" onClick={onCreateMeeting} disabled={isCreating}>

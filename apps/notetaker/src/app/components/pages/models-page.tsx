@@ -28,7 +28,6 @@ interface ModelsPageProps {
   onSetActiveModelVersion: (model: ManagedModel, version: string) => void;
   onRemoveModelVersion: (version: ModelVersionManifestEntry) => void;
   activeModel: ManagedModel;
-  onSelectModelPage: (model: ManagedModel) => void;
   formatBytes: (size: number) => string;
 }
 
@@ -47,7 +46,6 @@ export function ModelsPage({
   onSetActiveModelVersion,
   onRemoveModelVersion,
   activeModel,
-  onSelectModelPage,
   formatBytes,
 }: ModelsPageProps) {
   return (
@@ -78,7 +76,6 @@ export function ModelsPage({
         onSetActiveModelVersion={onSetActiveModelVersion}
         onRemoveModelVersion={onRemoveModelVersion}
         activeModel={activeModel}
-        onSelectModelPage={onSelectModelPage}
         formatBytes={formatBytes}
       />
     </Page>

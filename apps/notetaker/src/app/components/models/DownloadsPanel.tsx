@@ -8,7 +8,9 @@ import type {
   ModelDownloadTarget,
 } from '../../services/model-downloads';
 import styles from '../../app.module.css';
+import { Tabs, type TabItem } from '../common/tabs';
 import { RepositoryCard } from './RepositoryCard';
+import { getModelPagePath } from "../../app-routing";
 
 interface RepositoryDownloadGroup {
   id: string;
@@ -33,7 +35,6 @@ interface DownloadsPanelProps {
   onSetActiveModelVersion: (model: ManagedModel, version: string) => void;
   onRemoveModelVersion: (version: ModelVersionManifestEntry) => void;
   activeModel: ManagedModel;
-  onSelectModelPage: (model: ManagedModel) => void;
   formatBytes: (size: number) => string;
 }
 
@@ -74,7 +75,6 @@ export function DownloadsPanel({
   onSetActiveModelVersion,
   onRemoveModelVersion,
   activeModel,
-  onSelectModelPage,
   formatBytes,
 }: DownloadsPanelProps) {
   const activeSection =
@@ -88,20 +88,17 @@ export function DownloadsPanel({
   const versions = activeTarget ? getModelVersions(activeTarget.model) : [];
   const activeVersion = versions.find((version) => version.active);
 
+  const tabItems: TabItem[] = modelTargets.map((target) => ({
+    label: target.label,
+    path: getModelPagePath(target.model),
+  }));
+
   return (
     <>
-      <div className={styles.settingsSubnav}>
-        {modelTargets.map((target) => (
-          <button
-            key={target.model}
-            type="button"
-            data-active={target.model === activeTarget?.model}
-            onClick={() => onSelectModelPage(target.model)}
-          >
-            {target.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        items={tabItems}
+        activePath={getModelPagePath(activeTarget?.model ?? '')}
+      />
 
       {activeSection !== undefined && activeTarget !== undefined ? (
         <>

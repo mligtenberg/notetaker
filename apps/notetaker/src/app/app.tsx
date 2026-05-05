@@ -3,10 +3,10 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import styles from './app.module.css';
 import {
   PAGE_PATHS,
-  SETTINGS_MODEL_PAGES,
   resolveActivePage,
   resolveSettingsModel,
   resolveViewingMeetingId,
+  resolveMeetingTab,
 } from './app-routing';
 import { Page } from './components/common/page';
 import { DownloadProgressDialog } from './components/dialogs/download-progress-dialog';
@@ -32,6 +32,7 @@ export function App() {
   const activePage = resolveActivePage(location.pathname);
   const viewingMeetingId = resolveViewingMeetingId(location.pathname);
   const activeSettingsModel = resolveSettingsModel(location.pathname);
+  const activeTab = viewingMeetingId !== null ? resolveMeetingTab(location.pathname) : undefined;
 
   const meetingsController = useMeetingsController({
     navigate,
@@ -105,35 +106,29 @@ export function App() {
 
       <section className={styles.workspace}>
         {activePage === 'settings' ? (
-          <ModelsPage
-            modelVersions={modelController.modelVersions}
-            modelMessage={modelController.modelMessage}
-            downloadingModel={modelController.downloadingModel}
-            modelTargets={MODEL_DOWNLOAD_TARGETS}
-            downloadSections={MODEL_DOWNLOAD_SECTIONS}
-            getKnownDownloadSize={getKnownDownloadSize}
-            getDirectDownloadKey={getDirectDownloadKey}
-            getDirectDownloadVersion={modelController.getDirectDownloadVersion}
-            getModelVersions={modelController.getModelVersions}
-            getModelVersionTitle={getModelVersionTitle}
-            onDownloadDirectModel={(download) =>
-              void modelController.downloadDirectModel(download)
-            }
-            onSetActiveModelVersion={(model, version) =>
-              void modelController.setActiveModelVersion(model, version)
-            }
-            onRemoveModelVersion={(version) =>
-              void modelController.removeModelVersion(version)
-            }
-            activeModel={activeSettingsModel ?? 'transcription'}
-            onSelectModelPage={(model) => {
-              const page = SETTINGS_MODEL_PAGES.find((item) => item.model === model);
-              if (page !== undefined) {
-                navigate(`/settings/models/${page.path}`);
-              }
-            }}
-            formatBytes={formatBytes}
-          />
+        <ModelsPage
+          modelVersions={modelController.modelVersions}
+          modelMessage={modelController.modelMessage}
+          downloadingModel={modelController.downloadingModel}
+          modelTargets={MODEL_DOWNLOAD_TARGETS}
+          downloadSections={MODEL_DOWNLOAD_SECTIONS}
+          getKnownDownloadSize={getKnownDownloadSize}
+          getDirectDownloadKey={getDirectDownloadKey}
+          getDirectDownloadVersion={modelController.getDirectDownloadVersion}
+          getModelVersions={modelController.getModelVersions}
+          getModelVersionTitle={getModelVersionTitle}
+          onDownloadDirectModel={(download) =>
+            void modelController.downloadDirectModel(download)
+          }
+          onSetActiveModelVersion={(model, version) =>
+            void modelController.setActiveModelVersion(model, version)
+          }
+          onRemoveModelVersion={(version) =>
+            void modelController.removeModelVersion(version)
+          }
+          activeModel={activeSettingsModel ?? 'transcription'}
+          formatBytes={formatBytes}
+        />
         ) : null}
 
         {activePage === 'meetings' && viewingMeetingId !== null
@@ -208,7 +203,7 @@ export function App() {
                     void engineRunner.runSpeakerNaming(viewedMeeting.id)
                   }
                   onOpenLogging={engineRunner.openLogging}
-                  initialTab="details"
+                  activeTab={activeTab}
                   onBack={() => navigate('/meetings')}
                   formatBytes={formatBytes}
                   formatDate={formatDate}
