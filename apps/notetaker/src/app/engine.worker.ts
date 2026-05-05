@@ -128,7 +128,6 @@ export interface EngineWorkerRequest {
     fileName: string;
     audio: Float32Array;
     audioSampleRate?: number;
-    useWebGpu?: boolean;
     numSpeakers?: number | null;
     transcript?: Transcript;
     diarization?: SpeakerTurn[];
