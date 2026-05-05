@@ -1,5 +1,6 @@
 import type { StoredMeetingSummary } from '@notetaker/filesystem';
 import styles from '../app.module.css';
+import { Page } from './page';
 
 interface MeetingsPageProps {
   meetings: StoredMeetingSummary[];
@@ -27,13 +28,15 @@ export function MeetingsPage({
   formatDate,
 }: MeetingsPageProps) {
   return (
-    <section className={styles.panel}>
-      <div className={styles.panelToolbar}>
-        <button type="button" onClick={onCreateMeeting} disabled={isCreating}>
-          {isCreating ? 'Creating...' : '+ New meeting'}
-        </button>
-      </div>
-
+    <Page
+      toolbar={
+        <div className={styles.panelToolbar}>
+          <button type="button" onClick={onCreateMeeting} disabled={isCreating}>
+            {isCreating ? 'Creating...' : '+ New meeting'}
+          </button>
+        </div>
+      }
+    >
       {message.length > 0 ? <p className={styles.message}>{message}</p> : null}
 
       {meetings.length === 0 ? (
@@ -94,6 +97,6 @@ export function MeetingsPage({
           ))}
         </ul>
       )}
-    </section>
+    </Page>
   );
 }

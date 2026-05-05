@@ -18,6 +18,7 @@ import type {
 } from '@notetaker/filesystem';
 import styles from '../app.module.css';
 import { ExportControls } from './export-controls';
+import { Page } from './page';
 
 type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
 type EngineStatus = 'idle' | 'processing' | 'error';
@@ -227,14 +228,15 @@ export function MeetingDetailPage({
   const processing = engineStatus === 'processing';
 
   return (
-    <section className={styles.panel}>
-      <div className={styles.detailHeader}>
-        <h2>{meeting.name}</h2>
+    <Page
+      title={meeting.name}
+      headerClassName={styles.detailHeader}
+      headerActions={
         <button type="button" onClick={onBack}>
           Back
         </button>
-      </div>
-
+      }
+    >
       <nav className={styles.tabs} aria-label="Meeting sections">
         {TABS.map((tab) => (
           <button
@@ -435,7 +437,7 @@ export function MeetingDetailPage({
           />
         </>
       ) : null}
-    </section>
+    </Page>
   );
 }
 

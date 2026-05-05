@@ -8,6 +8,7 @@ import type {
   ModelDownloadTarget,
 } from '../services/model-downloads';
 import styles from '../app.module.css';
+import { Page } from './page';
 
 interface RepositoryDownloadGroup {
   id: string;
@@ -109,18 +110,17 @@ export function ModelsPage({
   const activeVersion = versions.find((version) => version.active);
 
   return (
-    <section className={styles.panel}>
-      <div className={styles.listHeader}>
-        <div>
-          <h2>Model manager</h2>
-        </div>
+    <Page
+      title="Model manager"
+      headerActions={
         <div className={styles.resultHeaderActions}>
           <span>
             {modelVersions.length} version
             {modelVersions.length === 1 ? '' : 's'}
           </span>
         </div>
-      </div>
+      }
+    >
       <div className={styles.settingsSubnav}>
         {modelTargets.map((target) => (
           <button
@@ -233,6 +233,6 @@ export function ModelsPage({
           </div>
         </div>
       ) : null}
-    </section>
+    </Page>
   );
 }

@@ -13,6 +13,7 @@ import { EngineLogDialog } from './components/engine-log-dialog';
 import { MeetingDetailPage } from './components/meeting-detail-page';
 import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
+import { Page } from './components/page';
 import {
   MODEL_DOWNLOAD_SECTIONS,
   MODEL_DOWNLOAD_TARGETS,
@@ -152,7 +153,7 @@ export function App() {
 
               if (viewedMeeting === undefined) {
                 return (
-                  <section className={styles.panel}>
+                  <Page>
                     <p className={styles.empty}>Meeting not found.</p>
                     <div className={styles.actions}>
                       <button
@@ -162,7 +163,7 @@ export function App() {
                         Back to meetings
                       </button>
                     </div>
-                  </section>
+                  </Page>
                 );
               }
 
