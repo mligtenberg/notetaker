@@ -26,52 +26,26 @@ import { MeetingDetailPage } from './components/meeting-detail-page';
 import { MeetingsPage } from './components/meetings-page';
 import { ModelsPage } from './components/models-page';
 import styles from './app.module.css';
+import type {
+  EngineStatus,
+  LiveTranscriptSegment,
+  RecorderStatus,
+} from './app.types';
+import {
+  PAGE_PATHS,
+  SETTINGS_MODEL_PAGES,
+  resolveActivePage,
+  resolveSettingsModel,
+  resolveViewingMeetingId,
+} from './app-routing';
+import { formatBytes, formatDate, formatTimestamp } from './utils/formatters';
+import { mimeTypeToExtension, todayIsoDate } from './utils/media-files';
 import {
   SUGGESTED_MODEL_DOWNLOADS_CONFIG,
   type SuggestedModelFileConfig,
   type SuggestedModelScores,
 } from './suggested-model-downloads.config';
 
-interface LiveTranscriptSegment {
-  text: string;
-  startSeconds: number;
-  endSeconds: number;
-}
-
-type RecorderStatus = 'idle' | 'ready' | 'recording' | 'saving' | 'error';
-type EngineStatus = 'idle' | 'processing' | 'error';
-type AppPage = 'meetings' | 'settings';
-
-const PAGE_PATHS: Record<AppPage, string> = {
-  meetings: '/meetings',
-  settings: '/settings/models',
-};
-
-function resolveActivePage(pathname: string): AppPage {
-  const segment = pathname.split('/')[1] ?? '';
-
-  if (segment === 'meetings') {
-    return segment;
-  }
-
-  if (segment === 'settings') {
-    return 'settings';
-  }
-
-  return 'meetings';
-}
-
-function resolveViewingMeetingId(pathname: string): string | null {
-  const parts = pathname.split('/');
-  if (
-    parts[1] === 'meetings' &&
-    parts[2] !== undefined &&
-    parts[2].length > 0
-  ) {
-    return parts[2];
-  }
-  return null;
-}
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type NavigatorWithWebGpu = Navigator & {
   gpu?: {
@@ -83,11 +57,6 @@ interface ModelDownloadTarget {
   model: ManagedModel;
   label: string;
   description: string;
-}
-
-interface SettingsModelPage {
-  model: ManagedModel;
-  path: string;
 }
 
 interface DirectModelFile {
@@ -142,13 +111,6 @@ const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
     description:
       'CTC ASR model for transcript-to-timecode alignment experiments.',
   },
-];
-
-const SETTINGS_MODEL_PAGES: SettingsModelPage[] = [
-  { model: 'transcription', path: 'transcription' },
-  { model: 'diarization', path: 'diarization' },
-  { model: 'language', path: 'language' },
-  { model: 'text-audio-sync', path: 'text-audio-sync' },
 ];
 
 const SUGGESTED_MODEL_DOWNLOADS = createSuggestedModelDownloads();
@@ -231,25 +193,6 @@ async function decodeAudioBlobToMonoFloat32(
   }
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(timestamp));
-}
-
 function normalizeQuantization(quantization: string): string {
   return quantization
     .trim()
@@ -266,21 +209,6 @@ function getQuantizedVersionName(
   }
 
   return `${modelName}--${normalizeQuantization(quantization)}`;
-}
-
-function formatTimestamp(totalSeconds: number): string {
-  const safeSeconds = Number.isFinite(totalSeconds)
-    ? Math.max(0, totalSeconds)
-    : 0;
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const seconds = Math.floor(safeSeconds % 60);
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-  }
-
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
 function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
@@ -364,17 +292,6 @@ function getSuggestedModelDownloads(model: ManagedModel): DirectModelDownload[] 
   );
 }
 
-function resolveSettingsModel(pathname: string): ManagedModel | null {
-  const parts = pathname.split('/');
-  if (parts[1] !== 'settings' || parts[2] !== 'models') {
-    return null;
-  }
-
-  const modelPath = parts[3] ?? '';
-  const match = SETTINGS_MODEL_PAGES.find((page) => page.path === modelPath);
-  return match?.model ?? null;
-}
-
 function buildHuggingFaceDownloadUrl(
   modelId: string,
   fileName: string,
@@ -441,34 +358,6 @@ async function downloadBlobWithProgress(
   }
 
   return new Blob(chunks, { type: file.type });
-}
-
-function mimeTypeToExtension(mimeType: string): string {
-  if (mimeType.includes('mp4')) {
-    return mimeType.startsWith('video/') ? 'mp4' : 'm4a';
-  }
-
-  if (mimeType.includes('quicktime')) {
-    return 'mov';
-  }
-
-  if (mimeType.includes('ogg')) {
-    return 'ogg';
-  }
-
-  if (mimeType.includes('wav')) {
-    return 'wav';
-  }
-
-  if (mimeType.includes('mpeg') || mimeType.includes('mp3')) {
-    return 'mp3';
-  }
-
-  return 'webm';
-}
-
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 async function detectWebGpuSupport(): Promise<boolean> {
