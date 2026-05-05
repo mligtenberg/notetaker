@@ -217,6 +217,44 @@
   padding: clamp(1rem, 2vw, 1.4rem);
 }
 
+.card {
+  background: rgba(11, 20, 36, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  color: inherit;
+  display: grid;
+  font: inherit;
+  gap: 0.85rem;
+  padding: 1rem;
+  text-align: left;
+}
+
+.cardCompact {
+  gap: 0.75rem;
+  padding: 0.85rem;
+}
+
+.cardRow {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cardInteractive {
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.cardInteractive:hover:not(:disabled),
+.cardInteractive:focus-visible:not(:disabled) {
+  background: #111c2e;
+  border-color: rgba(148, 184, 200, 0.45);
+  outline: none;
+  transform: translateY(-1px);
+}
+
 .statsGrid {
   display: grid;
   gap: 0.75rem;
@@ -224,9 +262,9 @@
 }
 
 .statsGrid article {
+  background: rgba(11, 20, 36, 0.55);
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 10px;
-  background: rgba(11, 20, 36, 0.55);
   padding: 0.7rem 0.85rem;
 }
 
@@ -614,12 +652,7 @@
 }
 
 .repositoryCard {
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 12px;
   background: rgba(8, 17, 31, 0.4);
-  display: grid;
-  gap: 0.75rem;
-  padding: 0.85rem;
 }
 
 .repositoryCard header {
@@ -1294,29 +1327,7 @@
 
 .meetingCard,
 .meetingCard:not(:disabled) {
-  background: rgba(11, 20, 36, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 12px;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  font: inherit;
-  gap: 0.85rem;
-  padding: 1rem;
-  text-align: left;
-  transition:
-    border-color 120ms ease,
-    background 120ms ease,
-    transform 120ms ease;
   width: 100%;
-}
-
-.meetingCard:hover:not(:disabled),
-.meetingCard:focus-visible:not(:disabled) {
-  background: #111c2e;
-  border-color: rgba(148, 184, 200, 0.45);
-  outline: none;
-  transform: translateY(-1px);
 }
 
 .meetingCard header {

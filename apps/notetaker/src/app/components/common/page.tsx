@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import styles from '../../app.module.css';
+import {Card} from "./card";
 
 interface PageProps {
   title?: ReactNode;
@@ -19,7 +20,7 @@ export function Page({
   children,
 }: PageProps) {
   return (
-    <section className={styles.panel}>
+    <Card>
       {title !== undefined ? (
         <div className={headerClassName}>
           <div>
@@ -35,6 +36,6 @@ export function Page({
       {toolbar}
 
       {children}
-    </section>
+    </Card>
   );
 }

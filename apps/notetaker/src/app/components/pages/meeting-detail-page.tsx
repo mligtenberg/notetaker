@@ -17,6 +17,7 @@ import type {
   StoredMeetingSummary,
 } from '@notetaker/filesystem';
 import styles from '../../app.module.css';
+import { Card } from '../common/card';
 import { ExportControls } from './export-controls';
 import { Page } from '../common/page';
 
@@ -1825,7 +1826,12 @@ function SpeakerNamesTab({
       </div>
       <ul className={styles.fileList}>
         {speakers.map((speaker) => (
-          <li key={speaker} className={styles.speakerNameRow}>
+          <Card
+            as="li"
+            key={speaker}
+            className={styles.speakerNameRow}
+            compact
+          >
             <label>
               <span>{speaker}</span>
               <input
@@ -1848,7 +1854,7 @@ function SpeakerNamesTab({
                 }}
               />
             </label>
-          </li>
+          </Card>
         ))}
       </ul>
     </div>

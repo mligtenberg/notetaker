@@ -8,6 +8,7 @@ import type {
   ModelDownloadTarget,
 } from '../../services/model-downloads';
 import styles from '../../app.module.css';
+import { Card } from '../common/card';
 import { Page } from '../common/page';
 
 interface RepositoryDownloadGroup {
@@ -170,7 +171,12 @@ export function ModelsPage({
 
           <div className={styles.repositoryGrid}>
             {groupDownloadsByRepository(activeSection.downloads).map((repository) => (
-              <article className={styles.repositoryCard} key={repository.id}>
+              <Card
+                as="article"
+                className={styles.repositoryCard}
+                compact
+                key={repository.id}
+              >
                 <header>
                   <strong>{repository.name}</strong>
                   <div className={styles.repositoryMetaLine}>
@@ -229,7 +235,7 @@ export function ModelsPage({
                     );
                   })}
                 </ul>
-              </article>
+              </Card>
             ))}
           </div>
         </div>

@@ -1,5 +1,6 @@
 import type { StoredMeetingSummary } from '@notetaker/filesystem';
 import styles from '../../app.module.css';
+import { Card } from '../common/card';
 import { Page } from '../common/page';
 
 interface MeetingsPageProps {
@@ -49,9 +50,11 @@ export function MeetingsPage({
         <ul className={styles.meetingGrid}>
           {meetings.map((meeting) => (
             <li key={meeting.id}>
-              <button
+              <Card
+                as="button"
                 type="button"
                 className={styles.meetingCard}
+                interactive
                 onClick={() => onOpenMeeting(meeting)}
               >
                 <header>
@@ -94,7 +97,7 @@ export function MeetingsPage({
                     </li>
                   ))}
                 </ul>
-              </button>
+              </Card>
             </li>
           ))}
         </ul>
