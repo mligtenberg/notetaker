@@ -112,6 +112,7 @@ export function ModelsPage({
   return (
     <Page
       title="Model manager"
+      subtitle="Manage local models used by the processing pipeline."
       headerActions={
         <div className={styles.resultHeaderActions}>
           <span>

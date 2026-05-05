@@ -357,11 +357,20 @@
   margin-bottom: 0.75rem;
 }
 
+.listHeader h1,
 .listHeader h2 {
   font-size: 1.1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0;
+}
+
+.pageSubtitle {
+  color: #94a3b8;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin: 0.25rem 0 0;
+  max-width: 62ch;
 }
 
 .listHeader span {
@@ -1405,6 +1414,7 @@
   margin-bottom: 1rem;
 }
 
+.detailHeader h1,
 .detailHeader h2 {
   font-size: 1.25rem;
   font-weight: 600;

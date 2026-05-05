@@ -3,6 +3,7 @@ import styles from '../app.module.css';
 
 interface PageProps {
   title?: ReactNode;
+  subtitle?: ReactNode;
   headerActions?: ReactNode;
   headerClassName?: string;
   toolbar?: ReactNode;
@@ -11,6 +12,7 @@ interface PageProps {
 
 export function Page({
   title,
+  subtitle,
   headerActions,
   headerClassName = styles.listHeader,
   toolbar,
@@ -21,7 +23,10 @@ export function Page({
       {title !== undefined ? (
         <div className={headerClassName}>
           <div>
-            <h2>{title}</h2>
+            <h1>{title}</h1>
+            {subtitle !== undefined ? (
+              <p className={styles.pageSubtitle}>{subtitle}</p>
+            ) : null}
           </div>
           {headerActions}
         </div>

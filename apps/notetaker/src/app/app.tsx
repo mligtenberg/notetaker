@@ -104,15 +104,6 @@ export function App() {
       </aside>
 
       <section className={styles.workspace}>
-        <header className={styles.hero}>
-          <h1>{activePage === 'settings' ? 'Settings' : 'Meetings'}</h1>
-          <p>
-            {activePage === 'settings'
-              ? 'Manage local models used by the processing pipeline.'
-              : 'Create meetings, capture recordings, and keep notes organized in OPFS.'}
-          </p>
-        </header>
-
         {activePage === 'settings' ? (
           <ModelsPage
             modelVersions={modelController.modelVersions}
@@ -153,7 +144,10 @@ export function App() {
 
               if (viewedMeeting === undefined) {
                 return (
-                  <Page>
+                  <Page
+                    title="Meeting not found"
+                    subtitle="The selected meeting could not be found in local storage."
+                  >
                     <p className={styles.empty}>Meeting not found.</p>
                     <div className={styles.actions}>
                       <button

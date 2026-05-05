@@ -230,6 +230,7 @@ export function MeetingDetailPage({
   return (
     <Page
       title={meeting.name}
+      subtitle={`${meeting.date} • ${meeting.participantCount} participant${meeting.participantCount === 1 ? '' : 's'}`}
       headerClassName={styles.detailHeader}
       headerActions={
         <button type="button" onClick={onBack}>

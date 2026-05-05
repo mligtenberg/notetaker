@@ -29,6 +29,8 @@ export function MeetingsPage({
 }: MeetingsPageProps) {
   return (
     <Page
+      title="Meetings"
+      subtitle="Create meetings, capture recordings, and keep notes organized in OPFS."
       toolbar={
         <div className={styles.panelToolbar}>
           <button type="button" onClick={onCreateMeeting} disabled={isCreating}>
