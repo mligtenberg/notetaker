@@ -1,5 +1,6 @@
 import type { DownloadProgressState } from '../app.types';
 import styles from '../app.module.css';
+import { Dialog } from './dialog';
 
 interface DownloadProgressDialogProps {
   progress: DownloadProgressState;
@@ -15,39 +16,32 @@ export function DownloadProgressDialog({
   onClose,
 }: DownloadProgressDialogProps) {
   return (
-    <div
-      className={styles.downloadOverlay}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Download progress"
-    >
-      <section className={styles.downloadDialog}>
-        <div className={styles.listHeader}>
-          <div>
-            <p className={styles.label}>Download</p>
-            <h2>{progress.title}</h2>
-          </div>
-          <span>{progress.status}</span>
-        </div>
-        <p className={styles.message}>
-          File {progress.fileIndex} of {progress.fileCount}: {progress.currentFile}
-        </p>
-        <div className={styles.progressTrack}>
-          <div style={{ width: `${percent ?? 8}%` }} />
-        </div>
-        <p className={styles.progressMeta}>
-          {formatBytes(progress.loadedBytes)} /{' '}
-          {progress.totalBytes === null
-            ? 'unknown'
-            : formatBytes(progress.totalBytes)}
-          {percent === null ? '' : ` (${percent}%)`}
-        </p>
-        {progress.status === 'complete' || progress.status === 'error' ? (
+    <Dialog
+      ariaLabel="Download progress"
+      label="Download"
+      title={progress.title}
+      status={<span>{progress.status}</span>}
+      actions={
+        progress.status === 'complete' || progress.status === 'error' ? (
           <button type="button" onClick={onClose}>
             Close
           </button>
-        ) : null}
-      </section>
-    </div>
+        ) : null
+      }
+    >
+      <p className={styles.message}>
+        File {progress.fileIndex} of {progress.fileCount}: {progress.currentFile}
+      </p>
+      <div className={styles.progressTrack}>
+        <div style={{ width: `${percent ?? 8}%` }} />
+      </div>
+      <p className={styles.progressMeta}>
+        {formatBytes(progress.loadedBytes)} /{' '}
+        {progress.totalBytes === null
+          ? 'unknown'
+          : formatBytes(progress.totalBytes)}
+        {percent === null ? '' : ` (${percent}%)`}
+      </p>
+    </Dialog>
   );
 }
