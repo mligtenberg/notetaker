@@ -306,6 +306,49 @@ const PYANNOTE_DOWNLOADS: DirectModelDownload[] = [
     1542304,
     'int8',
   ),
+  {
+    id: 'altunenes/speaker-diarization-community-1-onnx',
+    label: 'Community-1 ONNX FP32',
+    description:
+      'Community ONNX export of pyannote/speaker-diarization-community-1: segmentation (~5.9 MB) + embedding (~26.5 MB). CC-BY-4.0, no HF token gate. Processor configs reused from segmentation-3.0 (same architecture).',
+    model: 'pyannote',
+    quantization: 'fp32',
+    files: [
+      {
+        path: 'config.json',
+        url: buildHuggingFaceDownloadUrl(PYANNOTE_REPO, 'config.json'),
+        type: 'application/json',
+        size: 408,
+      },
+      {
+        path: 'preprocessor_config.json',
+        url: buildHuggingFaceDownloadUrl(
+          PYANNOTE_REPO,
+          'preprocessor_config.json',
+        ),
+        type: 'application/json',
+        size: 158,
+      },
+      {
+        path: 'onnx/model.onnx',
+        url: buildHuggingFaceDownloadUrl(
+          'altunenes/speaker-diarization-community-1-onnx',
+          'segmentation-community-1.onnx',
+        ),
+        type: 'application/octet-stream',
+        size: 5916375,
+      },
+      {
+        path: 'onnx/embedding_model.onnx',
+        url: buildHuggingFaceDownloadUrl(
+          'altunenes/speaker-diarization-community-1-onnx',
+          'embedding_model.onnx',
+        ),
+        type: 'application/octet-stream',
+        size: 26544032,
+      },
+    ],
+  },
 ];
 const GEMMA_DOWNLOADS: DirectModelDownload[] = [
   createDirectModelDownload({
@@ -1566,9 +1609,11 @@ export function App() {
     } catch (error) {
       setLiveTranscriptMeetingId(null);
       setEngineStatus('error');
-      setEngineMessage(
-        error instanceof Error ? error.message : 'Transcription failed.',
-      );
+      const message =
+        error instanceof Error ? error.message : 'Transcription failed.';
+      setEngineMessage(message);
+      appendEngineLog(`[error] ${message}`);
+      console.error('[engine] transcription failed', error);
     }
   }
 
@@ -1685,9 +1730,11 @@ export function App() {
       );
     } catch (error) {
       setEngineStatus('error');
-      setEngineMessage(
-        error instanceof Error ? error.message : 'Diarization failed.',
-      );
+      const message =
+        error instanceof Error ? error.message : 'Diarization failed.';
+      setEngineMessage(message);
+      appendEngineLog(`[error] ${message}`);
+      console.error('[engine] diarization failed', error);
     }
   }
 
@@ -1775,9 +1822,11 @@ export function App() {
       );
     } catch (error) {
       setEngineStatus('error');
-      setEngineMessage(
-        error instanceof Error ? error.message : 'Word sync failed.',
-      );
+      const message =
+        error instanceof Error ? error.message : 'Word sync failed.';
+      setEngineMessage(message);
+      appendEngineLog(`[error] ${message}`);
+      console.error('[engine] word sync failed', error);
     }
   }
 
@@ -1868,9 +1917,11 @@ export function App() {
       setEngineMessage(`Speaker naming completed for ${meeting.name}.`);
     } catch (error) {
       setEngineStatus('error');
-      setEngineMessage(
-        error instanceof Error ? error.message : 'Speaker naming failed.',
-      );
+      const message =
+        error instanceof Error ? error.message : 'Speaker naming failed.';
+      setEngineMessage(message);
+      appendEngineLog(`[error] ${message}`);
+      console.error('[engine] speaker naming failed', error);
     }
   }
 
