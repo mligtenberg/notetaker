@@ -1,20 +1,4 @@
-import { env } from '@huggingface/transformers';
-import { ModelCache, LOCAL_URL } from './lib/model-cache';
-import { FileSystem } from '@notetaker/filesystem';
-import { ModelManager } from '@notetaker/model-manager';
-
-env.useCustomCache = true;
-env.customCache = new ModelCache(
-  await ModelManager.create(new FileSystem()),
-  LOCAL_URL,
-);
-env.allowLocalModels = true;
-env.allowRemoteModels = false;
-env.useBrowserCache = false;
-// Prevent cache misses from falling through to Vite's /models/* HTML route.
-env.localModelPath = LOCAL_URL;
-
-export { LOCAL_URL };
+export * from './lib/transformers-cache'
 export * from './lib/engine';
 export * from './lib/engine-progress-event';
 export * from './lib/engine-progress-status';

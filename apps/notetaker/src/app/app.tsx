@@ -602,19 +602,24 @@ export function App() {
 
     setMeetings(summaries);
 
+    // Take a snapshot of existing URLs to avoid stale-closure issues when URLs are added
+    // or removed in this loop.
+    const existingUrlsSnapshot = { ...meetingUrls };
     for (const summary of summaries) {
-      if (meetingUrls[summary.id] !== undefined) {
+      if (existingUrlsSnapshot[summary.id] !== undefined) {
         continue;
       }
 
       try {
         const file = await repo.loadRecording(summary.id);
         const url = URL.createObjectURL(file);
-        setMeetingUrls((current) =>
-          current[summary.id] === undefined
-            ? { ...current, [summary.id]: url }
-            : (URL.revokeObjectURL(url), current),
-        );
+        // Guard against races: if the URL already exists in the latest state snapshot, revoke the new URL
+        // immediately to avoid leaks and avoid duplicating entries.
+        if (existingUrlsSnapshot[summary.id] !== undefined) {
+          URL.revokeObjectURL(url);
+          continue;
+        }
+        setMeetingUrls((current) => ({ ...current, [summary.id]: url }));
       } catch {
         // Recording missing — skip url generation.
       }
@@ -1290,6 +1295,7 @@ export function App() {
       const requestId = ++engineRequestIdRef.current;
 
       const transcript = await new Promise<Transcript>((resolve, reject) => {
+        let timeoutId: any;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
 
@@ -1306,6 +1312,7 @@ export function App() {
           }
 
           worker.removeEventListener('message', handleMessage);
+          clearTimeout(timeoutId);
 
           if (msg.ok) {
             if (msg.mode !== 'transcription') {
@@ -1334,6 +1341,10 @@ export function App() {
         );
         worker.postMessage(request, [samples.buffer]);
         appendEngineLog(`[worker] posted transcription request ${requestId}.`);
+        timeoutId = setTimeout(() => {
+          worker.removeEventListener('message', handleMessage);
+          reject(new Error('Worker transcription timed out.'));
+        }, 30000);
       });
 
       await repo.saveArtifact(selectedMeeting.id, 'transcript', transcript);
@@ -1412,6 +1423,7 @@ export function App() {
       const requestId = ++engineRequestIdRef.current;
 
       const turns = await new Promise<SpeakerTurn[]>((resolve, reject) => {
+        let timeoutId: any;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
 
@@ -1432,6 +1444,7 @@ export function App() {
           }
 
           worker.removeEventListener('message', handleMessage);
+          clearTimeout(timeoutId);
 
           if (msg.ok) {
             if (msg.mode !== 'diarization') {
@@ -1459,6 +1472,10 @@ export function App() {
         );
         worker.postMessage(request, [samples.buffer]);
         appendEngineLog(`[worker] posted diarization request ${requestId}.`);
+        timeoutId = setTimeout(() => {
+          worker.removeEventListener('message', handleMessage);
+          reject(new Error('Worker diarization timed out.'));
+        }, 30000);
       });
 
       const normalizedTurns = renumberSpeakersSequentially(turns);
@@ -1532,12 +1549,14 @@ export function App() {
       const requestId = ++engineRequestIdRef.current;
 
       const words = await new Promise<unknown[]>((resolve, reject) => {
+        let timeoutId: any;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
           if (msg.id !== requestId) return;
           if (handleWorkerUpdate(msg)) return;
           if (msg.type !== 'result') return;
           worker.removeEventListener('message', handleMessage);
+          clearTimeout(timeoutId);
           if (msg.ok) {
             if (msg.mode !== 'word-sync') {
               reject(new Error('Worker returned an unexpected result.'));
@@ -1560,6 +1579,10 @@ export function App() {
           transcript,
         };
         worker.postMessage(request, [samples.buffer]);
+        timeoutId = setTimeout(() => {
+          worker.removeEventListener('message', handleMessage);
+          reject(new Error('Worker word-sync timed out.'));
+        }, 30000);
       });
 
       await repo.saveArtifact(meetingId, 'word-sync', words);
@@ -1633,12 +1656,14 @@ export function App() {
 
       const names = await new Promise<Record<string, string>>(
         (resolve, reject) => {
+          let timeoutId: any;
           const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
             const msg = event.data;
             if (msg.id !== requestId) return;
             if (handleWorkerUpdate(msg)) return;
             if (msg.type !== 'result') return;
             worker.removeEventListener('message', handleMessage);
+            clearTimeout(timeoutId);
             if (msg.ok) {
               if (msg.mode !== 'speaker-naming') {
                 reject(new Error('Worker returned an unexpected result.'));
@@ -1661,6 +1686,10 @@ export function App() {
             diarization: turns,
           };
           worker.postMessage(request, [samples.buffer]);
+          timeoutId = setTimeout(() => {
+            worker.removeEventListener('message', handleMessage);
+            reject(new Error('Worker speaker-naming timed out.'));
+          }, 30000);
         },
       );
 

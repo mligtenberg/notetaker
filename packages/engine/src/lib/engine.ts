@@ -1344,8 +1344,6 @@ export class Engine {
         )) as TextGenerationResult;
         const text = this.#getGeneratedText(result);
         const chunkParsed = this.#parseSpeakerNames(text);
-
-        console.log('names', chunkParsed);
         for (const [speaker, name] of chunkParsed) {
           if (!parsed.has(speaker)) {
             parsed.set(speaker, name);
