@@ -2,26 +2,12 @@ import type {
   ManagedModel,
   ModelVersionManifestEntry,
 } from '@notetaker/model-manager';
-import type { SuggestedModelScores } from '../suggested-model-downloads.config';
+import type {
+  DirectModelDownload,
+  DownloadSection,
+  ModelDownloadTarget,
+} from '../services/model-downloads';
 import styles from '../app.module.css';
-
-interface DirectModelFile {
-  path: string;
-  url: string;
-  type: string;
-  size: number;
-}
-
-interface DirectModelDownload {
-  id: string;
-  repositoryName: string;
-  label: string;
-  description: string;
-  model: ManagedModel;
-  scores: SuggestedModelScores;
-  quantization?: string;
-  files: DirectModelFile[];
-}
 
 interface RepositoryDownloadGroup {
   id: string;
@@ -31,21 +17,6 @@ interface RepositoryDownloadGroup {
 
 function getRepositoryUrl(repositoryId: string): string {
   return `https://huggingface.co/${repositoryId}`;
-}
-
-interface ModelDownloadTarget {
-  model: ManagedModel;
-  label: string;
-  description: string;
-}
-
-interface DownloadSection {
-  model: ManagedModel;
-  title: string;
-  description: string;
-  downloads: DirectModelDownload[];
-  buttonLabel: string;
-  downloadingLabel: string;
 }
 
 interface ModelsPageProps {

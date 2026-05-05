@@ -41,10 +41,17 @@ import {
 import { formatBytes, formatDate, formatTimestamp } from './utils/formatters';
 import { mimeTypeToExtension, todayIsoDate } from './utils/media-files';
 import {
-  SUGGESTED_MODEL_DOWNLOADS_CONFIG,
-  type SuggestedModelFileConfig,
-  type SuggestedModelScores,
-} from './suggested-model-downloads.config';
+  MODEL_DOWNLOAD_SECTIONS,
+  MODEL_DOWNLOAD_TARGETS,
+  downloadBlobWithProgress,
+  getDirectDownloadKey,
+  getDirectDownloadVersion as findDirectDownloadVersion,
+  getKnownDownloadSize,
+  getModelVersionTitle,
+  getModelVersions as filterModelVersions,
+  getQuantizedVersionName,
+  type DirectModelDownload,
+} from './services/model-downloads';
 
 type WebGpuSupport = 'checking' | 'supported' | 'unsupported';
 type NavigatorWithWebGpu = Navigator & {
@@ -52,30 +59,6 @@ type NavigatorWithWebGpu = Navigator & {
     requestAdapter(): Promise<unknown>;
   };
 };
-
-interface ModelDownloadTarget {
-  model: ManagedModel;
-  label: string;
-  description: string;
-}
-
-interface DirectModelFile {
-  path: string;
-  url: string;
-  type: string;
-  size: number;
-}
-
-interface DirectModelDownload {
-  id: string;
-  repositoryName: string;
-  label: string;
-  description: string;
-  model: ManagedModel;
-  scores: SuggestedModelScores;
-  quantization?: string;
-  files: DirectModelFile[];
-}
 
 interface DownloadProgressState {
   title: string;
@@ -86,38 +69,6 @@ interface DownloadProgressState {
   totalBytes: number | null;
   status: 'downloading' | 'saving' | 'complete' | 'error';
 }
-
-const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
-  {
-    model: 'transcription',
-    label: 'Transcription',
-    description:
-      'Transcription model for Whisper and Faster-Whisper downloads.',
-  },
-  {
-    model: 'diarization',
-    label: 'Diarization',
-    description: 'Speaker diarization model',
-  },
-  {
-    model: 'language',
-    label: 'Language',
-    description:
-      'Speaker naming model. Suggests ONNX Community Gemma 4 browser/WebGPU models.',
-  },
-  {
-    model: 'text-audio-sync',
-    label: 'Text-Audio Sync',
-    description:
-      'CTC ASR model for transcript-to-timecode alignment experiments.',
-  },
-];
-
-const SUGGESTED_MODEL_DOWNLOADS = createSuggestedModelDownloads();
-const WHISPER_ONNX_DOWNLOADS = getSuggestedModelDownloads('transcription');
-const PYANNOTE_DOWNLOADS = getSuggestedModelDownloads('diarization');
-const GEMMA_DOWNLOADS = getSuggestedModelDownloads('language');
-const WAV2VEC2_DOWNLOADS = getSuggestedModelDownloads('text-audio-sync');
 
 const fileSystem = new FileSystem();
 
@@ -193,24 +144,6 @@ async function decodeAudioBlobToMonoFloat32(
   }
 }
 
-function normalizeQuantization(quantization: string): string {
-  return quantization
-    .trim()
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, '-');
-}
-
-function getQuantizedVersionName(
-  modelName: string,
-  quantization?: string,
-): string {
-  if (quantization === undefined || quantization.length === 0) {
-    return modelName;
-  }
-
-  return `${modelName}--${normalizeQuantization(quantization)}`;
-}
-
 function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
   const speakers = [...new Set(turns.map((turn) => turn.speaker))].sort();
   const numberedSpeakers = speakers
@@ -249,115 +182,6 @@ function renumberSpeakersSequentially(turns: SpeakerTurn[]): SpeakerTurn[] {
     ...turn,
     speaker: speakerMap.get(turn.speaker) ?? turn.speaker,
   }));
-}
-
-function createSuggestedModelDownloads(): DirectModelDownload[] {
-  return Object.entries(SUGGESTED_MODEL_DOWNLOADS_CONFIG).flatMap(
-    ([repositoryId, repository]) =>
-      Object.entries(repository.quantizations).map(
-        ([quantization, variant]): DirectModelDownload => ({
-          id: repositoryId,
-          repositoryName: repository.name,
-          label: `${repository.name} ${variant.label}`,
-          description: variant.description,
-          model: repository.model,
-          scores: variant.scores,
-          quantization,
-          files: Object.entries(variant.files).map(([path, file]) => {
-            const fileConfig = normalizeSuggestedModelFileConfig(file);
-            const sourceRepository = fileConfig.sourceRepository ?? repositoryId;
-            const sourcePath = fileConfig.sourcePath ?? path;
-
-            return {
-              path,
-              url: buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
-              type: resolveModelFileType(path),
-              size: fileConfig.size,
-            };
-          }),
-        }),
-      ),
-  );
-}
-
-function normalizeSuggestedModelFileConfig(
-  file: number | SuggestedModelFileConfig,
-): SuggestedModelFileConfig {
-  return typeof file === 'number' ? { size: file } : file;
-}
-
-function getSuggestedModelDownloads(model: ManagedModel): DirectModelDownload[] {
-  return SUGGESTED_MODEL_DOWNLOADS.filter(
-    (download) => download.model === model,
-  );
-}
-
-function buildHuggingFaceDownloadUrl(
-  modelId: string,
-  fileName: string,
-): string {
-  return `https://huggingface.co/${modelId}/resolve/main/${fileName
-    .split('/')
-    .map((part) => encodeURIComponent(part))
-    .join('/')}`;
-}
-
-function resolveModelFileType(path: string): string {
-  if (path.endsWith('.json')) {
-    return 'application/json';
-  }
-
-  if (path.endsWith('.yaml') || path.endsWith('.yml')) {
-    return 'application/yaml';
-  }
-
-  if (path.endsWith('.md') || path.endsWith('.jinja')) {
-    return 'text/plain';
-  }
-
-  return 'application/octet-stream';
-}
-
-async function downloadBlobWithProgress(
-  file: DirectModelFile,
-  onProgress: (loadedBytes: number, totalBytes: number | null) => void,
-): Promise<Blob> {
-  const response = await fetch(file.url);
-
-  if (!response.ok) {
-    throw new Error(
-      `Download failed for ${file.path} with ${response.status} ${response.statusText}.`,
-    );
-  }
-
-  const totalBytes = Number(response.headers.get('content-length'));
-  const normalizedTotalBytes = Number.isFinite(totalBytes) ? totalBytes : null;
-
-  if (response.body === null) {
-    const blob = await response.blob();
-    onProgress(blob.size, normalizedTotalBytes ?? blob.size);
-    return blob;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: BlobPart[] = [];
-  let loadedBytes = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-
-    if (done) {
-      break;
-    }
-
-    chunks.push(
-      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
-    );
-    loadedBytes += value.byteLength;
-    onProgress(loadedBytes, normalizedTotalBytes);
-  }
-
-  return new Blob(chunks, { type: file.type });
 }
 
 async function detectWebGpuSupport(): Promise<boolean> {
@@ -563,56 +387,11 @@ export function App() {
     setArtifactRevision((current) => current + 1);
   }
 
-  function getKnownDownloadSize(download: DirectModelDownload): number {
-    return download.files.reduce((total, file) => total + file.size, 0);
-  }
-
-  function getModelVersionTitle(version: ModelVersionManifestEntry): string {
-    const title = version.metadata?.['title'];
-    const huggingFaceModelId = version.metadata?.['huggingFaceModelId'];
-    const huggingFaceFile = version.metadata?.['huggingFaceFile'];
-
-    if (typeof title === 'string' && title.length > 0) {
-      return title;
-    }
-
-    if (
-      typeof huggingFaceModelId === 'string' &&
-      huggingFaceModelId.length > 0
-    ) {
-      return typeof huggingFaceFile === 'string' && huggingFaceFile.length > 0
-        ? `${huggingFaceModelId} / ${huggingFaceFile}`
-        : huggingFaceModelId;
-    }
-
-    return version.version;
-  }
-
-  function getDirectDownloadKey(download: DirectModelDownload): string {
-    return `${download.model}-${download.id}-${download.label}`;
-  }
-
   function getDirectDownloadVersion(
     download: DirectModelDownload,
     versions = modelVersions,
   ): ModelVersionManifestEntry | undefined {
-    const sourceUrls = download.files.map((file) => file.url);
-
-    return versions.find((version) => {
-      const metadata = version.metadata ?? {};
-      const storedSourceUrls = metadata['sourceUrls'];
-
-      return (
-        version.model === download.model &&
-        metadata['huggingFaceModelId'] === download.id &&
-        (download.quantization === undefined ||
-          version.quantization === download.quantization ||
-          metadata['quantization'] === download.quantization) &&
-        Array.isArray(storedSourceUrls) &&
-        sourceUrls.length === storedSourceUrls.length &&
-        sourceUrls.every((url) => storedSourceUrls.includes(url))
-      );
-    });
+    return findDirectDownloadVersion(download, versions);
   }
 
   useEffect(() => {
@@ -918,7 +697,7 @@ export function App() {
   }
 
   function getModelVersions(model: ManagedModel): ModelVersionManifestEntry[] {
-    return modelVersions.filter((version) => version.model === model);
+    return filterModelVersions(modelVersions, model);
   }
 
   async function handleSetActiveModelVersion(
@@ -1663,44 +1442,7 @@ export function App() {
             modelMessage={modelMessage}
             downloadingModel={downloadingModel}
             modelTargets={MODEL_DOWNLOAD_TARGETS}
-            downloadSections={[
-              {
-                model: 'transcription',
-                title: 'Transcription',
-                description:
-                  'Converts meeting audio into written transcript text for notes, search, and review.',
-                downloads: WHISPER_ONNX_DOWNLOADS,
-                buttonLabel: 'Download',
-                downloadingLabel: 'Downloading...',
-              },
-              {
-                model: 'diarization',
-                title: 'Speaker detection',
-                description:
-                  'Finds when speakers change so transcript segments can be grouped by participant.',
-                downloads: PYANNOTE_DOWNLOADS,
-                buttonLabel: 'Download',
-                downloadingLabel: 'Downloading...',
-              },
-              {
-                model: 'language',
-                title: 'Speaker naming',
-                description:
-                  'Infers likely participant names from meeting context and transcript content.',
-                downloads: GEMMA_DOWNLOADS,
-                buttonLabel: 'Download',
-                downloadingLabel: 'Downloading...',
-              },
-              {
-                model: 'text-audio-sync',
-                title: 'Text-audio sync',
-                description:
-                  'Aligns transcript text back to the audio timeline for precise timestamps and playback navigation.',
-                downloads: WAV2VEC2_DOWNLOADS,
-                buttonLabel: 'Download',
-                downloadingLabel: 'Downloading...',
-              },
-            ]}
+            downloadSections={MODEL_DOWNLOAD_SECTIONS}
             getKnownDownloadSize={getKnownDownloadSize}
             getDirectDownloadKey={getDirectDownloadKey}
             getDirectDownloadVersion={getDirectDownloadVersion}
