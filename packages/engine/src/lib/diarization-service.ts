@@ -16,7 +16,7 @@ import { read_audio } from "@huggingface/transformers";
 const DIARIZATION_CHUNK_SECONDS = 60;
 const DIARIZATION_MIN_CHUNK_SECONDS = 0.25;
 const DIARIZATION_OVERLAP_SECONDS = 30;
-const DIARIZATION_MIN_TURN_SECONDS = 1.25;
+const DIARIZATION_MIN_TURN_SECONDS = 0.5;
 const DIARIZATION_SMOOTHING_GAP_SECONDS = 0.75;
 
 type DiarizationOptions = {
@@ -409,7 +409,8 @@ function smoothSpeakerTurns(turns: SpeakerTurn[]): SpeakerTurn[] {
       durationSeconds < DIARIZATION_MIN_TURN_SECONDS &&
       previousTurn !== undefined &&
       turn.startSeconds - previousTurn.endSeconds <=
-        DIARIZATION_SMOOTHING_GAP_SECONDS
+        DIARIZATION_SMOOTHING_GAP_SECONDS &&
+      (nextTurn === undefined || nextTurn.speaker !== turn.speaker)
     ) {
       previousTurn.endSeconds = Math.max(
         previousTurn.endSeconds,

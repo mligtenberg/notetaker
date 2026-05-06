@@ -140,6 +140,12 @@ export class AlignmentService {
   }
 }
 
+// Minimum average margin (char logit − blank logit) across a word's frames.
+// During real speech characters decisively outscore blank; during music/noise
+// they barely win or lose. -2 allows speech where some frames are borderline
+// while still filtering clearly non-speech regions (music/noise).
+const CTC_MIN_CONFIDENCE = -2;
+
 function extractCtcWords(
   logits: TensorLike,
   tokenizer: CtcTokenizer,
@@ -147,9 +153,25 @@ function extractCtcWords(
 ): CtcWord[] {
   const vocab = tokenizer.get_vocab();
   const wordDelimiterToken = tokenizer.word_delimiter_token ?? '|';
-  const startToken = vocab.get(wordDelimiterToken) ?? undefined;
+  const startToken = vocab instanceof Map
+    ? vocab.get(wordDelimiterToken)
+    : (vocab as unknown as Record<string, number>)[wordDelimiterToken];
   const specialIds = new Set(tokenizer.all_special_ids ?? []);
   const padTokenId = tokenizer.pad_token_id ?? -1;
+  const hasPadToken = padTokenId >= 0 && padTokenId < (logits.dims[logits.dims.length - 1] ?? 0);
+
+  // Reverse lookup: token id → token string. get_vocab() returns a Map whose
+  // entries are not own properties, so hasOwnProperty + Object.keys don't work.
+  const idToToken = new Map<number, string>();
+  if (vocab instanceof Map) {
+    vocab.forEach((id, token) => idToToken.set(id, token));
+  } else {
+    for (const [token, id] of Object.entries(
+      vocab as unknown as Record<string, number>,
+    )) {
+      idToToken.set(id, token);
+    }
+  }
 
   const dims = logits.dims;
   const timeSteps = dims[dims.length - 2];
@@ -158,24 +180,46 @@ function extractCtcWords(
   const words: CtcWord[] = [];
   let currentWord = '';
   let wordStart = 0;
+  let wordConfidenceSum = 0;
+  let wordFrameCount = 0;
+  let prevToken = '';
+
+  const finalizeWord = (): void => {
+    if (currentWord.length === 0) {
+      return;
+    }
+    const avgConfidence =
+      !hasPadToken || wordFrameCount === 0
+        ? CTC_MIN_CONFIDENCE
+        : wordConfidenceSum / wordFrameCount;
+    if (avgConfidence >= CTC_MIN_CONFIDENCE) {
+      words.push({
+        text: normalizeCtcToken(currentWord),
+        startSeconds: (wordStart / timeSteps) * durationSeconds,
+      });
+    }
+    currentWord = '';
+    wordConfidenceSum = 0;
+    wordFrameCount = 0;
+    prevToken = '';
+  };
 
   for (let time = 0; time < timeSteps; time += 1) {
     const offset = time * numTokens;
     const bestIndex = argmax(data, offset, numTokens);
-    const tokenId = bestIndex - padTokenId !== 0 ? bestIndex : -1;
+    const relBestIndex = bestIndex - offset;
+    const tokenId = relBestIndex !== padTokenId ? relBestIndex : -1;
 
-    if (tokenId === startToken || tokenId === -1) {
-      if (currentWord.length > 0) {
-        words.push({
-          text: normalizeCtcToken(currentWord),
-          startSeconds:
-            (wordStart / timeSteps) * durationSeconds,
-        });
-        currentWord = '';
-      }
-      if (tokenId === startToken) {
-        wordStart = time + 1;
-      }
+    if (tokenId === startToken) {
+      finalizeWord();
+      wordStart = time + 1;
+      prevToken = '';
+      continue;
+    }
+
+    if (tokenId === -1) {
+      // CTC blank token — skip, does not finalize the word
+      prevToken = '';
       continue;
     }
 
@@ -183,9 +227,7 @@ function extractCtcWords(
       continue;
     }
 
-    const token = vocab.hasOwnProperty(String(tokenId))
-      ? Object.keys(vocab).find((key) => vocab.get(key) === tokenId) ?? ''
-      : '';
+    const token = idToToken.get(tokenId) ?? '';
 
     if (token.length === 0) {
       continue;
@@ -196,18 +238,26 @@ function extractCtcWords(
       continue;
     }
 
+    // CTC decoding: collapse consecutive repeated tokens
+    if (normalized === prevToken) {
+      continue;
+    }
+    prevToken = normalized;
+
     if (currentWord.length === 0) {
       wordStart = time;
     }
     currentWord += normalized;
+
+    if (hasPadToken) {
+      const charLogit = data[bestIndex] ?? 0;
+      const blankLogit = data[offset + padTokenId] ?? 0;
+      wordConfidenceSum += charLogit - blankLogit;
+      wordFrameCount += 1;
+    }
   }
 
-  if (currentWord.length > 0) {
-    words.push({
-      text: normalizeCtcToken(currentWord),
-      startSeconds: (wordStart / timeSteps) * durationSeconds,
-    });
-  }
+  finalizeWord();
 
   return words;
 }
@@ -239,45 +289,61 @@ function mapTranscriptWordsToCtcWords(
   transcriptWords: string[],
   ctcWords: CtcWord[],
 ): TimestampedWord[] {
+  console.log(transcriptWords);
+  console.log(ctcWords);
   const result: TimestampedWord[] = [];
+  let searchStart = 0;
 
   for (const word of transcriptWords) {
     const normalizedWord = normalizeAlignmentWord(word);
-    const searchStart = result.length > 0 ? result.length - 1 : 0;
     const index = findAlignedCtcWordIndex(
       normalizedWord,
       ctcWords,
       searchStart,
     );
 
+    console.log(`Normalized word: ${normalizedWord}, index: ${index}`);
+
     if (index >= 0 && index < ctcWords.length) {
       result.push({
         word: word,
         timestampInMs: Math.round(ctcWords[index].startSeconds * 1000),
       });
+      // Only advance, never retreat — backward matches must not undo our position.
+      searchStart = Math.max(searchStart, index + 1);
     }
   }
 
   return result;
 }
 
+const ALIGNMENT_BACKWARD_WINDOW = 4;
+
 function findAlignedCtcWordIndex(
   word: string,
   ctcWords: CtcWord[],
   startIndex: number,
 ): number {
+  if (word.trim() === "") {
+    return -1;
+  }
+
+  console.log(`Searching for word: ${word} starting from index: ${startIndex}`);
   for (let index = startIndex; index < ctcWords.length; index += 1) {
+    console.log(`Checking index: ${index}, word: ${ctcWords[index].text}`);
     if (
       areSimilarAlignmentWords(
         word,
         normalizeAlignmentWord(ctcWords[index].text),
       )
     ) {
+      console.log(`Found aligned word at index: ${index}`);
       return index;
     }
   }
 
-  for (let index = startIndex - 1; index >= 0; index -= 1) {
+  const backwardLimit = Math.max(0, startIndex - ALIGNMENT_BACKWARD_WINDOW);
+  for (let index = startIndex - 1; index >= backwardLimit; index -= 1) {
     if (
       areSimilarAlignmentWords(
         word,
@@ -303,7 +369,8 @@ function areSimilarAlignmentWords(
     return true;
   }
 
-  return levenshteinDistance(first, second) <= 1;
+  const threshold = Math.max(first.length, second.length) >= 8 ? 2 : 1;
+  return levenshteinDistance(first, second) <= threshold;
 }
 
 function levenshteinDistance(first: string, second: string): number {

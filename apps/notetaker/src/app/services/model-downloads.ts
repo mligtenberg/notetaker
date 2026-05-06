@@ -69,6 +69,43 @@ export const MODEL_DOWNLOAD_TARGETS: ModelDownloadTarget[] = [
 
 const SUGGESTED_MODEL_DOWNLOADS = createSuggestedModelDownloads();
 
+interface RecommendedModelChoice {
+  repositoryId: string;
+  quantization: string;
+}
+
+export const RECOMMENDED_DOWNLOADS: Record<ManagedModel, RecommendedModelChoice> = {
+  transcription: {
+    repositoryId: 'onnx-community/whisper-base',
+    quantization: 'q8',
+  },
+  diarization: {
+    repositoryId: 'onnx-community/pyannote-segmentation-3.0',
+    quantization: 'q8',
+  },
+  language: {
+    repositoryId: 'onnx-community/gemma-4-E2B-it-ONNX',
+    quantization: 'q4',
+  },
+  'text-audio-sync': {
+    repositoryId: 'onnx-community/wav2vec2-base-960h-ONNX',
+    quantization: 'q8',
+  },
+};
+
+export function getRecommendedDownload(
+  model: ManagedModel,
+): DirectModelDownload | undefined {
+  const choice = RECOMMENDED_DOWNLOADS[model];
+
+  return SUGGESTED_MODEL_DOWNLOADS.find(
+    (download) =>
+      download.model === model &&
+      download.id === choice.repositoryId &&
+      download.quantization === choice.quantization,
+  );
+}
+
 export const MODEL_DOWNLOAD_SECTIONS: DownloadSection[] = [
   {
     model: 'transcription',

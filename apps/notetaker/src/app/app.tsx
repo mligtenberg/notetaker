@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import styles from './app.module.css';
 import {
@@ -11,6 +11,7 @@ import {
 import { Page } from './components/common/page';
 import { DownloadProgressDialog } from './components/dialogs/download-progress-dialog';
 import { EngineLogDialog } from './components/dialogs/engine-log-dialog';
+import { SetupWizardDialog } from './components/dialogs/setup-wizard-dialog';
 import { MeetingDetailPage } from './components/pages/meeting-detail-page';
 import { MeetingsPage } from './components/pages/meetings-page';
 import { ModelsPage } from './components/pages/models-page';
@@ -20,15 +21,26 @@ import {
   getDirectDownloadKey,
   getKnownDownloadSize,
   getModelVersionTitle,
+  type DirectModelDownload,
 } from './services/model-downloads';
 import { formatBytes, formatDate, formatTimestamp } from './utils/formatters';
 import { useEngineRunner } from './hooks/use-engine-runner';
 import { useMeetingsController } from './hooks/use-meetings-controller';
 import { useModelManagerController } from './hooks/use-model-manager-controller';
 
+const SETUP_COMPLETED_STORAGE_KEY = 'notetaker.setup-completed';
+
 export function App() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [setupCompleted, setSetupCompleted] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+
+    return window.localStorage.getItem(SETUP_COMPLETED_STORAGE_KEY) === 'true';
+  });
+  const [wizardDownloading, setWizardDownloading] = useState(false);
   const activePage = resolveActivePage(location.pathname);
   const viewingMeetingId = resolveViewingMeetingId(location.pathname);
   const activeSettingsModel = resolveSettingsModel(location.pathname);
@@ -63,6 +75,27 @@ export function App() {
   }, [location.pathname, navigate]);
 
   useEffect(() => () => engineRunner.disposeEngineWorker(), []);
+
+  function completeSetup() {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SETUP_COMPLETED_STORAGE_KEY, 'true');
+    }
+    setSetupCompleted(true);
+  }
+
+  async function handleWizardDownload(downloads: DirectModelDownload[]) {
+    setWizardDownloading(true);
+    try {
+      for (const download of downloads) {
+        await modelController.downloadDirectModel(download);
+      }
+      completeSetup();
+    } finally {
+      setWizardDownloading(false);
+    }
+  }
+
+  const showSetupWizard = !setupCompleted && !wizardDownloading;
 
   const activeModelCount = MODEL_DOWNLOAD_TARGETS.filter(
     (target) => modelController.getActiveModelVersion(target.model) !== undefined,
@@ -237,6 +270,15 @@ export function App() {
           logLines={engineRunner.engineLog}
           liveTranscriptSegments={engineRunner.liveTranscriptSegments}
           onClose={() => engineRunner.setEngineDialogOpen(false)}
+        />
+      ) : null}
+
+      {showSetupWizard ? (
+        <SetupWizardDialog
+          isDownloading={modelController.downloadingModel !== null}
+          formatBytes={formatBytes}
+          onDownload={(downloads) => void handleWizardDownload(downloads)}
+          onSkip={completeSetup}
         />
       ) : null}
 
