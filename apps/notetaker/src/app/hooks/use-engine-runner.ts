@@ -141,7 +141,6 @@ export function useEngineRunner({
     try {
       await repo.deleteArtifact(selectedMeeting.id, 'transcript');
       await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
-      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
       setArtifactRevision((current) => current + 1);
 
@@ -257,8 +256,6 @@ export function useEngineRunner({
     setEngineLog([`Starting diarization of ${selectedMeeting.name}.`]);
 
     try {
-      await repo.deleteArtifact(selectedMeeting.id, 'diarization');
-      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
       await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
       setArtifactRevision((current) => current + 1);
@@ -335,7 +332,6 @@ export function useEngineRunner({
       const normalizedTurns = renumberSpeakersSequentially(turns);
 
       await repo.saveArtifact(selectedMeeting.id, 'diarization', normalizedTurns);
-      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
       await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
       setArtifactRevision((current) => current + 1);
@@ -380,7 +376,6 @@ export function useEngineRunner({
 
     try {
       await repo.deleteArtifact(meetingId, 'word-sync');
-      await repo.deleteArtifact(meetingId, 'speaker-names');
       await refreshMeetings(repo);
       setArtifactRevision((current) => current + 1);
 
@@ -439,7 +434,6 @@ export function useEngineRunner({
       });
 
       await repo.saveArtifact(meetingId, 'word-sync', words);
-      await repo.deleteArtifact(meetingId, 'speaker-names');
       await refreshMeetings(repo);
       setArtifactRevision((current) => current + 1);
       setEngineStatus('idle');

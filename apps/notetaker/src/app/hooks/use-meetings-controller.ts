@@ -186,11 +186,6 @@ export function useMeetingsController({
     }
 
     await repo.saveArtifact(meetingId, kind, data);
-
-    if (kind === 'diarization') {
-      await repo.deleteArtifact(meetingId, 'speaker-names');
-    }
-
     await refreshMeetings(repo);
     setArtifactRevision((current) => current + 1);
   }

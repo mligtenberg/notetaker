@@ -18,6 +18,7 @@ import type {
 } from '@notetaker/filesystem';
 import styles from '../../app.module.css';
 import { Card } from '../common/card';
+import { Dialog } from '../common/dialog';
 import { ExportControls } from './export-controls';
 import { Page } from '../common/page';
 import { type MeetingTab } from '../../app-routing';
@@ -1803,6 +1804,63 @@ function SpeakerNamesTab({
   );
 }
 
+interface EditSegmentDialogProps {
+  label: string;
+  title: string;
+  text: string;
+  saving: boolean;
+  onChangeText: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}
+
+function EditSegmentDialog({
+  label,
+  title,
+  text,
+  saving,
+  onChangeText,
+  onSave,
+  onCancel,
+}: EditSegmentDialogProps) {
+  return (
+    <Dialog
+      ariaLabel={title}
+      label={label}
+      title={title}
+      actions={
+        <div className={styles.dialogActions}>
+          <button type="button" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving || text.trim().length === 0}
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      }
+    >
+      <textarea
+        value={text}
+        onChange={(event) => onChangeText(event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            onSave();
+          }
+          if (event.key === 'Escape') {
+            onCancel();
+          }
+        }}
+        disabled={saving}
+        autoFocus
+      />
+    </Dialog>
+  );
+}
+
 interface TranscriptSegmentContextMenuProps {
   state: TranscriptSegmentMenuState;
   segmentText: string;
@@ -1821,6 +1879,10 @@ function TranscriptSegmentContextMenu({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (mode === 'edit') {
+      return;
+    }
+
     function handleKeyDown(event: globalThis.KeyboardEvent): void {
       if (event.key === 'Escape') {
         onClose();
@@ -1838,7 +1900,7 @@ function TranscriptSegmentContextMenu({
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('click', handleClick);
     };
-  }, [onClose]);
+  }, [onClose, mode]);
 
   async function handleSave(): Promise<void> {
     const trimmed = text.trim();
@@ -1854,52 +1916,32 @@ function TranscriptSegmentContextMenu({
     }
   }
 
+  if (mode === 'edit') {
+    return (
+      <EditSegmentDialog
+        label="Transcript"
+        title="Edit segment"
+        text={text}
+        saving={saving}
+        onChangeText={setText}
+        onSave={() => void handleSave()}
+        onCancel={onClose}
+      />
+    );
+  }
+
   return (
     <div
       className={styles.speakerMergePopover}
       style={{ left: state.x, top: state.y }}
       onClick={(event) => event.stopPropagation()}
     >
-      {mode === 'menu' ? (
-        <>
-          <strong>Transcript segment</strong>
-          <button type="button" onClick={() => setMode('edit')}>
-            <span aria-hidden="true">✎</span>
-            Edit
-          </button>
-        </>
-      ) : null}
-
-      {mode === 'edit' ? (
-        <>
-          <strong>Edit transcript segment</strong>
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                void handleSave();
-              }
-            }}
-            disabled={saving}
-            autoFocus
-          />
-          <button
-            type="button"
-            onClick={() => void handleSave()}
-            disabled={saving || text.trim().length === 0}
-          >
-            <span aria-hidden="true">✓</span>
-            {saving ? 'Saving...' : 'Save'}
-          </button>
-          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
-            <span aria-hidden="true">←</span>
-            Back
-          </button>
-        </>
-      ) : null}
-
-      <button type="button" onClick={onClose} disabled={saving}>
+      <strong>Transcript segment</strong>
+      <button type="button" onClick={() => setMode('edit')}>
+        <span aria-hidden="true">✎</span>
+        Edit
+      </button>
+      <button type="button" onClick={onClose}>
         <span aria-hidden="true">×</span>
         Cancel
       </button>
@@ -1946,6 +1988,10 @@ function SpeakerContextMenu({
   }, [mergeTargets]);
 
   useEffect(() => {
+    if (mode === 'edit') {
+      return;
+    }
+
     function handleKeyDown(event: globalThis.KeyboardEvent): void {
       if (event.key === 'Escape') {
         onClose();
@@ -1963,7 +2009,7 @@ function SpeakerContextMenu({
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('click', handleClick);
     };
-  }, [onClose]);
+  }, [onClose, mode]);
 
   async function handleRename(): Promise<void> {
     const trimmed = speakerName.trim();
@@ -2004,6 +2050,20 @@ function SpeakerContextMenu({
     } finally {
       setSaving(false);
     }
+  }
+
+  if (mode === 'edit') {
+    return (
+      <EditSegmentDialog
+        label="Word sync"
+        title="Edit segment"
+        text={text}
+        saving={saving}
+        onChangeText={setText}
+        onSave={() => void handleEdit()}
+        onCancel={onClose}
+      />
+    );
   }
 
   return (
@@ -2099,35 +2159,6 @@ function SpeakerContextMenu({
           >
             <span aria-hidden="true">⇄</span>
             {saving ? 'Merging...' : 'Merge'}
-          </button>
-          <button type="button" onClick={() => setMode('menu')} disabled={saving}>
-            <span aria-hidden="true">←</span>
-            Back
-          </button>
-        </>
-      ) : null}
-
-      {mode === 'edit' ? (
-        <>
-          <strong>Edit word sync segment</strong>
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                void handleEdit();
-              }
-            }}
-            disabled={saving}
-            autoFocus
-          />
-          <button
-            type="button"
-            onClick={() => void handleEdit()}
-            disabled={saving || text.trim().length === 0}
-          >
-            <span aria-hidden="true">✓</span>
-            {saving ? 'Saving...' : 'Save'}
           </button>
           <button type="button" onClick={() => setMode('menu')} disabled={saving}>
             <span aria-hidden="true">←</span>

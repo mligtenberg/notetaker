@@ -22,12 +22,26 @@ export default defineConfig(() => ({
   },
   plugins: [react()],
   optimizeDeps: {
-    force: true,
+    include: [
+      '@huggingface/transformers',
+    ],
+    entries: [
+      'src/main.tsx',
+      'src/app/engine.worker.ts',
+    ],
+    worker: {
+      include: [
+        '@huggingface/transformers',
+        '@notetaker/engine',
+        '@notetaker/model-manager',
+        '@notetaker/filesystem',
+      ],
+    },
   },
-  // Uncomment this if you are using workers.
-  // worker: {
-  //  plugins: [],
-  // },
+  worker: {
+    format: 'module',
+    plugins: () => [react()],
+  },
   build: {
     outDir: './dist',
     emptyOutDir: true,

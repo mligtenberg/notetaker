@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {
-    Engine, PipelineFactory, EngineProgressEvent, MeetingNotes, SpeakerTurn, Transcript, configureTransformersCache
+    Engine, PipelineFactory, EngineProgressEvent, MeetingNotes, SpeakerTurn, Transcript, configureTransformersCache,
+    TimestampedWord
 } from '@notetaker/engine';
 import {FileSystem, type LanguageMode} from '@notetaker/filesystem';
 import {ModelManager} from '@notetaker/model-manager';
@@ -109,11 +110,6 @@ function anchorWordsToTranscriptSegments(
     }
 
     return anchoredWords;
-}
-
-export interface TimestampedWord {
-    word: string;
-    timestampInMs: number;
 }
 
 export interface EngineWorkerRequest {
