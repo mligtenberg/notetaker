@@ -93,6 +93,46 @@ export function useModelManagerController() {
     );
   }
 
+  function getActiveModelVersionForLanguage(
+    model: ManagedModel,
+    languageCode: string,
+  ): ModelVersionManifestEntry | undefined {
+    return (
+      modelVersions.find(
+        (version) =>
+          version.model === model &&
+          version.activeLanguages?.includes(languageCode),
+      ) ??
+      modelVersions.find(
+        (version) =>
+          version.model === model && version.activeLanguages?.includes('*'),
+      )
+    );
+  }
+
+  async function setActiveModelVersionForLanguage(
+    model: ManagedModel,
+    version: string,
+    languageCode: string,
+  ) {
+    const modelManager = modelManagerRef.current;
+
+    if (modelManager === null || version.length === 0) {
+      return;
+    }
+
+    try {
+      setModelMessage(`Activating ${model} ${version} for ${languageCode}...`);
+      await modelManager.setActiveVersionForLanguage(model, version, languageCode);
+      await refreshModelVersions(modelManager);
+      setModelMessage(`Activated ${model} ${version} for ${languageCode}.`);
+    } catch (error) {
+      setModelMessage(
+        error instanceof Error ? error.message : 'Failed to activate model.',
+      );
+    }
+  }
+
   async function setActiveModelVersion(model: ManagedModel, version: string) {
     const modelManager = modelManagerRef.current;
 
@@ -179,12 +219,15 @@ export function useModelManagerController() {
           : { ...currentProgress, status: 'saving' },
       );
 
+      const isLanguageAware = download.model === 'text-audio-sync';
       await modelManager.addVersion({
         model: download.model,
         modelName,
         version,
         quantization: download.quantization,
         activate: true,
+        languageCodes: download.languageCodes,
+        activateForLanguages: isLanguageAware ? download.languageCodes : undefined,
         files,
         metadata: {
           title: download.label,
@@ -250,7 +293,9 @@ export function useModelManagerController() {
     getDirectDownloadVersion,
     getModelVersions,
     getActiveModelVersion,
+    getActiveModelVersionForLanguage,
     setActiveModelVersion,
+    setActiveModelVersionForLanguage,
     downloadDirectModel,
     removeModelVersion,
   };

@@ -289,8 +289,6 @@ function mapTranscriptWordsToCtcWords(
   transcriptWords: string[],
   ctcWords: CtcWord[],
 ): TimestampedWord[] {
-  console.log(transcriptWords);
-  console.log(ctcWords);
   const result: TimestampedWord[] = [];
   let searchStart = 0;
 
@@ -301,8 +299,6 @@ function mapTranscriptWordsToCtcWords(
       ctcWords,
       searchStart,
     );
-
-    console.log(`Normalized word: ${normalizedWord}, index: ${index}`);
 
     if (index >= 0 && index < ctcWords.length) {
       result.push({
@@ -328,16 +324,13 @@ function findAlignedCtcWordIndex(
     return -1;
   }
 
-  console.log(`Searching for word: ${word} starting from index: ${startIndex}`);
   for (let index = startIndex; index < ctcWords.length; index += 1) {
-    console.log(`Checking index: ${index}, word: ${ctcWords[index].text}`);
     if (
       areSimilarAlignmentWords(
         word,
         normalizeAlignmentWord(ctcWords[index].text),
       )
     ) {
-      console.log(`Found aligned word at index: ${index}`);
       return index;
     }
   }

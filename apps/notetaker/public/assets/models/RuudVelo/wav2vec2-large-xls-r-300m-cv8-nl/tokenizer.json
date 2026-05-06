@@ -1,0 +1,116 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 44,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": true,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 43,
+      "content": "[UNK]",
+      "single_word": false,
+      "lstrip": true,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 45,
+      "content": "<s>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": true,
+      "special": true
+    },
+    {
+      "id": 46,
+      "content": "</s>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": true,
+      "special": true
+    }
+  ],
+  "normalizer": {
+    "type": "Replace",
+    "pattern": {
+      "String": " "
+    },
+    "content": "|"
+  },
+  "pre_tokenizer": {
+    "type": "Split",
+    "pattern": {
+      "Regex": ""
+    },
+    "behavior": "Isolated",
+    "invert": false
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "CTC",
+    "pad_token": "[PAD]",
+    "word_delimiter_token": "|",
+    "cleanup": true
+  },
+  "model": {
+    "vocab": {
+      "[PAD]": 44,
+      "[UNK]": 43,
+      "a": 1,
+      "b": 2,
+      "c": 3,
+      "d": 4,
+      "e": 5,
+      "f": 6,
+      "g": 7,
+      "h": 8,
+      "i": 9,
+      "j": 10,
+      "k": 11,
+      "l": 12,
+      "m": 13,
+      "n": 14,
+      "o": 15,
+      "p": 16,
+      "q": 17,
+      "r": 18,
+      "s": 19,
+      "t": 20,
+      "u": 21,
+      "v": 22,
+      "w": 23,
+      "x": 24,
+      "y": 25,
+      "z": 26,
+      "|": 0,
+      "à": 27,
+      "á": 28,
+      "ä": 29,
+      "è": 30,
+      "é": 31,
+      "ê": 32,
+      "ë": 33,
+      "í": 34,
+      "ï": 35,
+      "ó": 36,
+      "ö": 37,
+      "ú": 38,
+      "ü": 39,
+      "ă": 40,
+      "š": 41,
+      "ţ": 42,
+      "</s>": 46,
+      "<s>": 45
+    }
+  }
+}

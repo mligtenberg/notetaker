@@ -156,6 +156,13 @@ export function App() {
           onSetActiveModelVersion={(model, version) =>
             void modelController.setActiveModelVersion(model, version)
           }
+          onSetActiveModelVersionForLanguage={(model, version, languageCode) =>
+            void modelController.setActiveModelVersionForLanguage(
+              model,
+              version,
+              languageCode,
+            )
+          }
           onRemoveModelVersion={(version) =>
             void modelController.removeModelVersion(version)
           }

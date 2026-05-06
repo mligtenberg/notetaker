@@ -29,6 +29,7 @@ export interface DirectModelDownload {
   model: ManagedModel;
   scores: SuggestedModelScores;
   quantization?: string;
+  languageCodes: string[];
   files: DirectModelFile[];
 }
 
@@ -157,6 +158,7 @@ export function createSuggestedModelDownloads(): DirectModelDownload[] {
           model: repository.model,
           scores: variant.scores,
           quantization,
+          languageCodes: variant.languageCode ?? ['*'],
           files: Object.entries(variant.files).map(([path, file]) => {
             const fileConfig = normalizeSuggestedModelFileConfig(file);
             const sourceRepository = fileConfig.sourceRepository ?? repositoryId;
@@ -164,7 +166,9 @@ export function createSuggestedModelDownloads(): DirectModelDownload[] {
 
             return {
               path,
-              url: buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
+              url:
+                fileConfig.sourceUrl ??
+                buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
               type: resolveModelFileType(path),
               size: fileConfig.size,
             };

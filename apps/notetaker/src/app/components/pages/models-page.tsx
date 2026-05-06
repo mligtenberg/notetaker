@@ -26,6 +26,11 @@ interface ModelsPageProps {
   getModelVersionTitle: (version: ModelVersionManifestEntry) => string;
   onDownloadDirectModel: (download: DirectModelDownload) => void;
   onSetActiveModelVersion: (model: ManagedModel, version: string) => void;
+  onSetActiveModelVersionForLanguage: (
+    model: ManagedModel,
+    version: string,
+    languageCode: string,
+  ) => void;
   onRemoveModelVersion: (version: ModelVersionManifestEntry) => void;
   activeModel: ManagedModel;
   formatBytes: (size: number) => string;
@@ -44,6 +49,7 @@ export function ModelsPage({
   getModelVersionTitle,
   onDownloadDirectModel,
   onSetActiveModelVersion,
+  onSetActiveModelVersionForLanguage,
   onRemoveModelVersion,
   activeModel,
   formatBytes,
@@ -74,6 +80,7 @@ export function ModelsPage({
         getModelVersionTitle={getModelVersionTitle}
         onDownloadDirectModel={onDownloadDirectModel}
         onSetActiveModelVersion={onSetActiveModelVersion}
+        onSetActiveModelVersionForLanguage={onSetActiveModelVersionForLanguage}
         onRemoveModelVersion={onRemoveModelVersion}
         activeModel={activeModel}
         formatBytes={formatBytes}

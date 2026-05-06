@@ -21,12 +21,16 @@ export interface SuggestedModelFileConfig {
   size: number;
   sourceRepository?: string;
   sourcePath?: string;
+  sourceUrl?: string;
 }
 
 export interface SuggestedModelQuantizationConfig {
   label: string;
   description: string;
   scores: SuggestedModelScores;
+  languageCode?: string[];
+  // Optional per-quantization languages supported by this quantization variant
+  languages?: string[];
   files: Record<string, number | SuggestedModelFileConfig>;
 }
 
@@ -48,6 +52,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'FP32',
         description: 'Current transformers.js full-precision Whisper tiny model.',
         scores: { speed: 5, quality: 2.5, size: 2 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2243,
@@ -68,6 +73,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'Q8',
         description: 'Current transformers.js quantized Whisper tiny model.',
         scores: { speed: 5, quality: 2, size: 4 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2243,
@@ -94,6 +100,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'FP32',
         description: 'Current transformers.js full-precision Whisper base model.',
         scores: { speed: 4, quality: 3.5, size: 1.5 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2243,
@@ -114,6 +121,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'Q8',
         description: 'Current transformers.js quantized Whisper base model.',
         scores: { speed: 4.5, quality: 3, size: 3.5 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2243,
@@ -140,6 +148,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'FP32',
         description: 'Current transformers.js full-precision Whisper Small model.',
         scores: { speed: 3, quality: 4.5, size: 1 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2227,
@@ -160,6 +169,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         label: 'Q8',
         description: 'Current transformers.js quantized Whisper small model.',
         scores: { speed: 3.5, quality: 4, size: 2.5 },
+        languageCode: ['*'],
         files: {
           'added_tokens.json': 34604,
           'config.json': 2227,
@@ -185,6 +195,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
       fp32: {
         label: 'FP32',
         description: 'Full-precision segmentation model',
+        languageCode: ['*'],
         scores: { speed: 3, quality: 4.5, size: 3.5 },
         files: {
           'config.json': 408,
@@ -195,6 +206,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
       q8: {
         label: 'Q8',
         description: 'Quantized ONNX segmentation model',
+        languageCode: ['*'],
         scores: { speed: 4, quality: 4, size: 5 },
         files: {
           'config.json': 408,
@@ -213,6 +225,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         description:
           'Community ONNX export of pyannote/speaker-diarization-community-1',
         scores: { speed: 2.5, quality: 4.5, size: 2.5 },
+        languageCode: ['*'],
         files: {
           'config.json': {
             size: 408,
@@ -240,6 +253,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
     quantizations: {
       q4: {
         label: 'Q4',
+        languageCode: ['*'],
         description: 'Q4 ONNX text-generation files from ONNX Community for browser/WebGPU testing.',
         scores: { speed: 3, quality: 3.5, size: 2 },
         files: {
@@ -265,6 +279,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
       q4: {
         label: 'Q4',
         description: 'Q4 ONNX text-generation files from ONNX Community for larger browser/WebGPU testing.',
+        languageCode: ['*'],
         scores: { speed: 2, quality: 4, size: 1 },
         files: {
           'chat_template.jinja': 16317,
@@ -284,6 +299,53 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
       },
     },
   },
+  'RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl': {
+    name: 'wav2vec2 XLS-R 300m NL',
+    model: 'text-audio-sync',
+    quantizations: {
+      q8: {
+        label: 'Q8',
+        description:
+          'Quantized Wav2Vec2 CTC model fine-tuned on Dutch Common Voice 8 for transcript-to-timecode alignment.',
+        scores: { speed: 2, quality: 4, size: 2 },
+        languageCode: ['nl'],
+        files: {
+          'config.json': {
+            size: 2043,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/config.json',
+          },
+          'preprocessor_config.json': {
+            size: 262,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/preprocessor_config.json',
+          },
+          'special_tokens_map.json': {
+            size: 520,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/special_tokens_map.json',
+          },
+          'tokenizer_config.json': {
+            size: 1192,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/tokenizer_config.json',
+          },
+          'tokenizer.json': {
+            size: 1942,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/tokenizer.json',
+          },
+          'vocab.json': {
+            size: 512,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/vocab.json',
+          },
+          'added_tokens.json': {
+            size: 30,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/added_tokens.json',
+          },
+          'onnx/model_quantized.onnx': {
+            size: 355022393,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/onnx/model_quantized.onnx',
+          },
+        },
+      },
+    },
+  },
   'onnx-community/wav2vec2-base-960h-ONNX': {
     name: 'wav2vec2 base 960h',
     model: 'text-audio-sync',
@@ -293,6 +355,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         description:
           'Full-precision Wav2Vec2 CTC model. Suitable for forced-alignment experiments, but alignment is not wired into the engine yet.',
         scores: { speed: 2.5, quality: 4, size: 1 },
+        languageCode: ['en'],
         files: {
           'config.json': 2157,
           'preprocessor_config.json': 215,
@@ -309,6 +372,7 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
         description:
           'Quantized Wav2Vec2 CTC model for smaller local alignment experiments. Alignment is not wired into the engine yet.',
         scores: { speed: 3.5, quality: 3.5, size: 3.5 },
+        languageCode: ['en'],
         files: {
           'config.json': 2157,
           'preprocessor_config.json': 215,

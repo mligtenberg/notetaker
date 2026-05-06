@@ -29,6 +29,8 @@ export interface ModelVersionManifestEntry {
   quantization?: string;
   files: ModelFileManifestEntry[];
   active: boolean;
+  languageCodes?: string[];
+  activeLanguages?: string[];
   createdAt: string;
   updatedAt: string;
   metadata?: Record<string, unknown>;
@@ -48,6 +50,8 @@ export interface AddModelVersionOptions {
   quantization?: string;
   files: ModelVersionFile[];
   activate?: boolean;
+  languageCodes?: string[];
+  activateForLanguages?: string[];
   metadata?: Record<string, unknown>;
 }
 
@@ -107,13 +111,25 @@ export class ModelManager {
     }
 
     const existingEntry = manifest.models[options.model][options.version];
+    const languageCodes =
+      options.languageCodes ?? existingEntry?.languageCodes;
+    const activateForLanguages = options.activateForLanguages;
+    const initialActiveLanguages =
+      activateForLanguages ?? existingEntry?.activeLanguages ?? [];
+    const activate =
+      options.activate ??
+      (activateForLanguages !== undefined && activateForLanguages.length > 0
+        ? true
+        : (existingEntry?.active ?? false));
     const entry: ModelVersionManifestEntry = {
       model: options.model,
       modelName: options.modelName ?? existingEntry?.modelName ?? options.version,
       version: options.version,
       quantization: options.quantization ?? existingEntry?.quantization,
       files: fileEntries,
-      active: options.activate ?? existingEntry?.active ?? false,
+      active: activate,
+      languageCodes,
+      activeLanguages: initialActiveLanguages,
       createdAt: existingEntry?.createdAt ?? now,
       updatedAt: now,
       metadata: options.metadata ?? existingEntry?.metadata,
@@ -123,6 +139,12 @@ export class ModelManager {
 
     if (entry.active) {
       this.#markOnlyActive(manifest, options.model, options.version);
+    }
+
+    if (activateForLanguages !== undefined) {
+      for (const language of activateForLanguages) {
+        this.#assignLanguageActive(manifest, options.model, options.version, language);
+      }
     }
 
     await this.#writeManifest(manifest);
@@ -193,6 +215,49 @@ export class ModelManager {
     }
 
     this.#markOnlyActive(manifest, model, version);
+    entry.updatedAt = new Date().toISOString();
+    await this.#writeManifest(manifest);
+    return entry;
+  }
+
+  async getActiveVersionForLanguage(
+    model: ManagedModel,
+    languageCode: string,
+  ): Promise<StoredModelVersion | null> {
+    this.#assertValidModel(model);
+
+    const manifest = await this.#readManifest();
+    const entries = Object.values(manifest.models[model]);
+    const entry =
+      entries.find((version) => version.activeLanguages?.includes(languageCode)) ??
+      entries.find((version) => version.activeLanguages?.includes('*'));
+
+    if (entry === undefined) {
+      return null;
+    }
+
+    return {
+      manifest: entry,
+      directoryHandle: await this.#getVersionDirectory(model, entry.version),
+    };
+  }
+
+  async setActiveVersionForLanguage(
+    model: ManagedModel,
+    version: string,
+    languageCode: string,
+  ): Promise<ModelVersionManifestEntry> {
+    this.#assertValidModel(model);
+    this.#assertSafePathPart(version, 'version');
+
+    const manifest = await this.#readManifest();
+    const entry = manifest.models[model][version];
+
+    if (entry === undefined) {
+      throw new Error(`Model version does not exist: ${model}@${version}`);
+    }
+
+    this.#assignLanguageActive(manifest, model, version, languageCode);
     entry.updatedAt = new Date().toISOString();
     await this.#writeManifest(manifest);
     return entry;
@@ -373,6 +438,27 @@ export class ModelManager {
   #markOnlyActive(manifest: ModelManifest, model: ManagedModel, version: string): void {
     for (const entry of Object.values(manifest.models[model])) {
       entry.active = entry.version === version;
+    }
+  }
+
+  #assignLanguageActive(
+    manifest: ModelManifest,
+    model: ManagedModel,
+    version: string,
+    languageCode: string,
+  ): void {
+    for (const entry of Object.values(manifest.models[model])) {
+      const languages = entry.activeLanguages ?? [];
+
+      if (entry.version === version) {
+        entry.activeLanguages = languages.includes(languageCode)
+          ? languages
+          : [...languages, languageCode];
+      } else if (languages.includes(languageCode)) {
+        entry.activeLanguages = languages.filter((code) => code !== languageCode);
+      }
+
+      entry.active = (entry.activeLanguages?.length ?? 0) > 0;
     }
   }
 
