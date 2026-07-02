@@ -5,14 +5,14 @@ import type { MeetingAudio } from './models/meeting-audio';
 import type { SpeakerTurn } from './models/speaker-turn';
 import type { TranscriptSegment } from './models/transcript-segment';
 import type { TimestampedText } from './models/timestamped-text';
+import type { Transcript } from './models/transcript';
+import type { TimestampedWord } from './models/timestamped-word';
 import { PipelineFactory } from './pipeline-factory';
 import { ModelManager } from '@notetaker/model-manager';
 import { TranscriptionService } from './transcription-service';
 import { DiarizationService } from './diarization-service';
 import { AlignmentService } from './alignment-service';
 import { SpeakerNamingService } from './speaker-naming-service';
-
-type TimestampedWord = { word: string; timestampInMs: number };
 
 export class Engine {
   private transcriptionService: TranscriptionService;
@@ -70,7 +70,7 @@ export class Engine {
       },
     );
     const alignedWords = await this.alignmentService.alignTranscriptToAudio(
-      transcriptText,
+      buildTranscriptFromFragments(transcriptText, timestampedFragments),
       meeting.audio,
       debug,
     );
@@ -132,7 +132,7 @@ export class Engine {
   }
 
   async alignTranscriptToAudio(
-    transcript: string,
+    transcript: Transcript,
     meetingAudio: MeetingAudio,
     debug?: (line: string) => void,
     inputSampleRate?: number,
@@ -216,4 +216,29 @@ export class Engine {
 
     return bestTurn?.speaker ?? 'SPEAKER_0';
   }
+}
+
+function buildTranscriptFromFragments(
+  text: string,
+  fragments: TimestampedText[],
+): Transcript {
+  const segments = fragments.map((fragment, index) => {
+    const next = fragments[index + 1];
+    const startSeconds = fragment.timestampInMs / 1000;
+    const wordCount = fragment.text.split(/\s+/).filter(Boolean).length;
+    const endSeconds =
+      next?.timestampInMs !== undefined
+        ? next.timestampInMs / 1000
+        : startSeconds + Math.max(1, wordCount * 0.45);
+
+    return {
+      text: fragment.text,
+      startSeconds,
+      endSeconds,
+      speaker: '',
+      speakerName: '',
+    };
+  });
+
+  return { text, segments };
 }

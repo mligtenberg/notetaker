@@ -171,7 +171,6 @@ export function useEngineRunner({
       const requestId = ++engineRequestIdRef.current;
 
       const transcript = await new Promise<Transcript>((resolve, reject) => {
-        let timeoutId: ReturnType<typeof setTimeout>;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
 
@@ -180,7 +179,6 @@ export function useEngineRunner({
           if (msg.type !== 'result') return;
 
           worker.removeEventListener('message', handleMessage);
-          clearTimeout(timeoutId);
 
           if (msg.ok) {
             if (msg.mode !== 'transcription') {
@@ -208,10 +206,6 @@ export function useEngineRunner({
         );
         worker.postMessage(request, [samples.buffer]);
         appendEngineLog(`[worker] posted transcription request ${requestId}.`);
-        timeoutId = setTimeout(() => {
-          worker.removeEventListener('message', handleMessage);
-          reject(new Error('Worker transcription timed out.'));
-        }, 30000);
       });
 
       await repo.saveArtifact(selectedMeeting.id, 'transcript', transcript);
@@ -286,7 +280,6 @@ export function useEngineRunner({
       const requestId = ++engineRequestIdRef.current;
 
       const turns = await new Promise<SpeakerTurn[]>((resolve, reject) => {
-        let timeoutId: ReturnType<typeof setTimeout>;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
 
@@ -296,7 +289,6 @@ export function useEngineRunner({
           if (msg.type !== 'result') return;
 
           worker.removeEventListener('message', handleMessage);
-          clearTimeout(timeoutId);
 
           if (msg.ok) {
             if (msg.mode !== 'diarization') {
@@ -323,10 +315,6 @@ export function useEngineRunner({
         );
         worker.postMessage(request, [samples.buffer]);
         appendEngineLog(`[worker] posted diarization request ${requestId}.`);
-        timeoutId = setTimeout(() => {
-          worker.removeEventListener('message', handleMessage);
-          reject(new Error('Worker diarization timed out.'));
-        }, 30000);
       });
 
       const normalizedTurns = renumberSpeakersSequentially(turns);
@@ -364,7 +352,9 @@ export function useEngineRunner({
       return;
     }
 
-    if (getActiveModelVersion('text-audio-sync') === undefined) {
+    const activeWav2Vec2 = getActiveModelVersion('text-audio-sync');
+
+    if (activeWav2Vec2 === undefined) {
       setEngineMessage('Download a Wav2Vec2 model first.');
       return;
     }
@@ -372,7 +362,10 @@ export function useEngineRunner({
     setEngineStatus('processing');
     setLiveTranscriptMeetingId(null);
     setEngineMessage(`Aligning words for ${meeting.name}...`);
-    setEngineLog([`Starting word-sync for ${meeting.name}.`]);
+    setEngineLog([
+      `Starting word-sync for ${meeting.name}.`,
+      `Using Wav2Vec2 ${getModelVersionTitle(activeWav2Vec2)}.`,
+    ]);
 
     try {
       await repo.deleteArtifact(meetingId, 'word-sync');
@@ -398,14 +391,12 @@ export function useEngineRunner({
       const requestId = ++engineRequestIdRef.current;
 
       const words = await new Promise<unknown[]>((resolve, reject) => {
-        let timeoutId: ReturnType<typeof setTimeout>;
         const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
           const msg = event.data;
           if (msg.id !== requestId) return;
           if (handleWorkerUpdate(msg)) return;
           if (msg.type !== 'result') return;
           worker.removeEventListener('message', handleMessage);
-          clearTimeout(timeoutId);
           if (msg.ok) {
             if (msg.mode !== 'word-sync') {
               reject(new Error('Worker returned an unexpected result.'));
@@ -427,10 +418,6 @@ export function useEngineRunner({
           transcript,
         };
         worker.postMessage(request, [samples.buffer]);
-        timeoutId = setTimeout(() => {
-          worker.removeEventListener('message', handleMessage);
-          reject(new Error('Worker word-sync timed out.'));
-        }, 30000);
       });
 
       await repo.saveArtifact(meetingId, 'word-sync', words);
@@ -502,14 +489,12 @@ export function useEngineRunner({
 
       const names = await new Promise<Record<string, string>>(
         (resolve, reject) => {
-          let timeoutId: ReturnType<typeof setTimeout>;
           const handleMessage = (event: MessageEvent<EngineWorkerResponse>) => {
             const msg = event.data;
             if (msg.id !== requestId) return;
             if (handleWorkerUpdate(msg)) return;
             if (msg.type !== 'result') return;
             worker.removeEventListener('message', handleMessage);
-            clearTimeout(timeoutId);
             if (msg.ok) {
               if (msg.mode !== 'speaker-naming') {
                 reject(new Error('Worker returned an unexpected result.'));
@@ -531,10 +516,6 @@ export function useEngineRunner({
             diarization: turns,
           };
           worker.postMessage(request, [samples.buffer]);
-          timeoutId = setTimeout(() => {
-            worker.removeEventListener('message', handleMessage);
-            reject(new Error('Worker speaker-naming timed out.'));
-          }, 30000);
         },
       );
 

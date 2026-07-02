@@ -303,6 +303,47 @@ export const SUGGESTED_MODEL_DOWNLOADS_CONFIG: Record<
     name: 'wav2vec2 XLS-R 300m NL',
     model: 'text-audio-sync',
     quantizations: {
+      fp32: {
+        label: 'FP32',
+        description:
+          'Full-precision Wav2Vec2 CTC model fine-tuned on Dutch Common Voice 8 for transcript-to-timecode alignment.',
+        scores: { speed: 1.5, quality: 4.5, size: 1 },
+        languageCode: ['nl'],
+        files: {
+          'config.json': {
+            size: 2043,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/config.json',
+          },
+          'preprocessor_config.json': {
+            size: 262,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/preprocessor_config.json',
+          },
+          'special_tokens_map.json': {
+            size: 520,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/special_tokens_map.json',
+          },
+          'tokenizer_config.json': {
+            size: 1192,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/tokenizer_config.json',
+          },
+          'tokenizer.json': {
+            size: 1942,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/tokenizer.json',
+          },
+          'vocab.json': {
+            size: 512,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/vocab.json',
+          },
+          'added_tokens.json': {
+            size: 30,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/added_tokens.json',
+          },
+          'onnx/model.onnx': {
+            size: 1262348908,
+            sourceUrl: '/assets/models/RuudVelo/wav2vec2-large-xls-r-300m-cv8-nl/onnx/model.onnx',
+          },
+        },
+      },
       q8: {
         label: 'Q8',
         description:

@@ -68,3 +68,22 @@ export async function requireActiveModel(
 
   return activeModel;
 }
+
+export async function requireActiveModelForLanguage(
+  modelManager: ModelManager,
+  model: ManagedModel,
+  languageCode: string | undefined,
+) {
+  if (languageCode !== undefined) {
+    const languageActive = await modelManager.getActiveVersionForLanguage(
+      model,
+      languageCode,
+    );
+
+    if (languageActive !== null) {
+      return languageActive;
+    }
+  }
+
+  return requireActiveModel(modelManager, model);
+}

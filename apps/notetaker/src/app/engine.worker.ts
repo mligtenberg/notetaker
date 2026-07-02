@@ -68,50 +68,6 @@ function toWorkerTranscriptSegments(
     });
 }
 
-function anchorWordsToTranscriptSegments(
-    words: TimestampedWord[],
-    transcript: Transcript,
-): TimestampedWord[] {
-    let wordIndex = 0;
-    const anchoredWords: TimestampedWord[] = [];
-
-    for (const segment of transcript.segments) {
-        const segmentWords = segment.text.match(/\S+/g) ?? [];
-
-        if (segmentWords.length === 0) {
-            continue;
-        }
-
-        const startSeconds = segment.startSeconds;
-        const endSeconds = Math.max(
-            segment.endSeconds,
-            startSeconds + segmentWords.length * 0.25,
-        );
-        const stepSeconds =
-            segmentWords.length === 1
-                ? 0
-                : (endSeconds - startSeconds) / segmentWords.length;
-
-        for (let index = 0; index < segmentWords.length; index += 1) {
-            const word = words[wordIndex];
-            const alignedSeconds = (word?.timestampInMs ?? -1) / 1000;
-            const interpolatedSeconds = startSeconds + index * stepSeconds;
-            const timestampInMs =
-                alignedSeconds >= startSeconds - 1 && alignedSeconds <= endSeconds + 1
-                    ? Math.round(alignedSeconds * 1000)
-                    : Math.round(interpolatedSeconds * 1000);
-
-            anchoredWords.push({
-                word: word?.word ?? segmentWords[index],
-                timestampInMs,
-            });
-            wordIndex += 1;
-        }
-    }
-
-    return anchoredWords;
-}
-
 export interface EngineWorkerRequest {
     id: number;
     mode?:
@@ -317,6 +273,10 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
                     event: {stage: 'transcription', status: 'completed'},
                 };
                 (self as DedicatedWorkerGlobalScope).postMessage(completed);
+                // For 'translate' the output is always English; otherwise it's
+                // whatever language Whisper transcribed in (explicit or detected).
+                const transcriptLanguage =
+                    task === 'translate' ? 'en' : language;
                 const response: EngineWorkerResponse = {
                     id,
                     type: 'result',
@@ -329,6 +289,9 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
                             speaker: 'SPEAKER_0',
                             speakerName: 'SPEAKER_0',
                         })),
+                        ...(transcriptLanguage !== undefined
+                            ? { language: transcriptLanguage }
+                            : {}),
                     },
                 };
                 (self as DedicatedWorkerGlobalScope).postMessage(response);
@@ -347,17 +310,13 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
                 };
                 (self as DedicatedWorkerGlobalScope).postMessage(progress);
                 const words = await engine.alignTranscriptToAudio(
-                    transcript.text,
+                    transcript,
                     audio,
                     log,
                     event.data.audioSampleRate,
                 );
-                const anchoredWords = anchorWordsToTranscriptSegments(
-                    words,
-                    transcript,
-                );
                 log(
-                    `[word-sync] anchored ${anchoredWords.length} word timestamp(s) to ${transcript.segments.length} transcript segment(s).`,
+                    `[word-sync] aligned ${words.length} word timestamp(s) over ${transcript.segments.length} transcript segment(s).`,
                 );
                 const completed: EngineWorkerResponse = {
                     id,
@@ -370,9 +329,10 @@ self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
                     type: 'result',
                     ok: true,
                     mode: 'word-sync',
-                    words: anchoredWords.map((w) => ({
+                    words: words.map((w) => ({
                         word: w.word,
                         timestampInMs: w.timestampInMs,
+                        endTimeInMs: w.endTimeInMs,
                     })),
                 };
                 (self as DedicatedWorkerGlobalScope).postMessage(response);
