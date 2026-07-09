@@ -8,7 +8,10 @@ import {
 import type { SpeakerTurn, Transcript } from '@notetaker/engine';
 import type { MeetingsRepository, StoredMeetingSummary } from '@notetaker/filesystem';
 import type { ManagedModel, ModelVersionManifestEntry } from '@notetaker/model-manager';
-import EngineWorker from '../engine.worker.ts?worker';
+import {
+  disposeSharedEngineWorker,
+  getSharedEngineWorker,
+} from '../engine-worker-instance';
 import type { EngineWorkerRequest, EngineWorkerResponse } from '../engine.worker';
 import type { EngineStatus, LiveTranscriptSegment } from '../app.types';
 import { formatBytes } from '../utils/formatters';
@@ -21,7 +24,7 @@ interface UseEngineRunnerOptions {
   meetings: StoredMeetingSummary[];
   selectedMeetingId: string;
   refreshMeetings: (repo?: MeetingsRepository | null) => Promise<void>;
-  setArtifactRevision: Dispatch<SetStateAction<number>>;
+  setDerivationRevision: Dispatch<SetStateAction<number>>;
   getActiveModelVersion: (
     model: ManagedModel,
   ) => ModelVersionManifestEntry | undefined;
@@ -32,7 +35,7 @@ export function useEngineRunner({
   meetings,
   selectedMeetingId,
   refreshMeetings,
-  setArtifactRevision,
+  setDerivationRevision,
   getActiveModelVersion,
 }: UseEngineRunnerOptions) {
   const engineWorkerRef = useRef<Worker | null>(null);
@@ -54,7 +57,7 @@ export function useEngineRunner({
   >(null);
 
   function disposeEngineWorker(): void {
-    engineWorkerRef.current?.terminate();
+    disposeSharedEngineWorker();
     engineWorkerRef.current = null;
   }
 
@@ -68,9 +71,9 @@ export function useEngineRunner({
   }
 
   function getEngineWorker(): Worker {
-    if (engineWorkerRef.current === null) {
-      const worker = new EngineWorker();
+    const worker = getSharedEngineWorker();
 
+    if (engineWorkerRef.current !== worker) {
       worker.addEventListener('error', (event) => {
         appendEngineLog(
           `[worker] error ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`,
@@ -139,10 +142,10 @@ export function useEngineRunner({
     setLiveTranscriptSegments([]);
 
     try {
-      await repo.deleteArtifact(selectedMeeting.id, 'transcript');
-      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
+      await repo.deleteDerivation(selectedMeeting.id, 'transcript');
+      await repo.deleteDerivation(selectedMeeting.id, 'word-sync');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
       const audioFile = await repo.loadRecording(selectedMeeting.id);
       setEngineMessage(`Decoding ${selectedMeeting.name}...`);
@@ -208,11 +211,11 @@ export function useEngineRunner({
         appendEngineLog(`[worker] posted transcription request ${requestId}.`);
       });
 
-      await repo.saveArtifact(selectedMeeting.id, 'transcript', transcript);
-      await repo.deleteArtifact(selectedMeeting.id, 'word-sync');
-      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await repo.saveDerivation(selectedMeeting.id, 'transcript', transcript);
+      await repo.deleteDerivation(selectedMeeting.id, 'word-sync');
+      await repo.deleteDerivation(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
       setLiveTranscriptMeetingId(null);
       setEngineStatus('idle');
@@ -250,9 +253,9 @@ export function useEngineRunner({
     setEngineLog([`Starting diarization of ${selectedMeeting.name}.`]);
 
     try {
-      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await repo.deleteDerivation(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
       const audioFile = await repo.loadRecording(selectedMeeting.id);
       setEngineLog((current) => [
@@ -319,10 +322,10 @@ export function useEngineRunner({
 
       const normalizedTurns = renumberSpeakersSequentially(turns);
 
-      await repo.saveArtifact(selectedMeeting.id, 'diarization', normalizedTurns);
-      await repo.deleteArtifact(selectedMeeting.id, 'speaker-names');
+      await repo.saveDerivation(selectedMeeting.id, 'diarization', normalizedTurns);
+      await repo.deleteDerivation(selectedMeeting.id, 'speaker-names');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
       setEngineStatus('idle');
       setEngineMessage(
@@ -347,7 +350,7 @@ export function useEngineRunner({
       return;
     }
 
-    if (!meeting.artifacts.transcript || !meeting.artifacts.diarization) {
+    if (!meeting.derivations.transcript || !meeting.derivations.diarization) {
       setEngineMessage('Generate transcript and diarization first.');
       return;
     }
@@ -368,11 +371,11 @@ export function useEngineRunner({
     ]);
 
     try {
-      await repo.deleteArtifact(meetingId, 'word-sync');
+      await repo.deleteDerivation(meetingId, 'word-sync');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
-      const transcript = await repo.loadArtifact<Transcript>(
+      const transcript = await repo.loadDerivation<Transcript>(
         meetingId,
         'transcript',
       );
@@ -420,9 +423,9 @@ export function useEngineRunner({
         worker.postMessage(request, [samples.buffer]);
       });
 
-      await repo.saveArtifact(meetingId, 'word-sync', words);
+      await repo.saveDerivation(meetingId, 'word-sync', words);
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
       setEngineStatus('idle');
       setEngineMessage(
         `Word sync completed for ${meeting.name} (${words.length} words).`,
@@ -445,7 +448,7 @@ export function useEngineRunner({
       return;
     }
 
-    if (!meeting.artifacts['word-sync']) {
+    if (!meeting.derivations['word-sync']) {
       setEngineMessage('Generate word sync first.');
       return;
     }
@@ -461,15 +464,15 @@ export function useEngineRunner({
     setEngineLog([`Starting speaker naming for ${meeting.name}.`]);
 
     try {
-      await repo.deleteArtifact(meetingId, 'speaker-names');
+      await repo.deleteDerivation(meetingId, 'speaker-names');
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
 
-      const transcript = await repo.loadArtifact<Transcript>(
+      const transcript = await repo.loadDerivation<Transcript>(
         meetingId,
         'transcript',
       );
-      const turns = await repo.loadArtifact<SpeakerTurn[]>(
+      const turns = await repo.loadDerivation<SpeakerTurn[]>(
         meetingId,
         'diarization',
       );
@@ -519,9 +522,9 @@ export function useEngineRunner({
         },
       );
 
-      await repo.saveArtifact(meetingId, 'speaker-names', names);
+      await repo.saveDerivation(meetingId, 'speaker-names', names);
       await refreshMeetings(repo);
-      setArtifactRevision((current) => current + 1);
+      setDerivationRevision((current) => current + 1);
       setEngineStatus('idle');
       setEngineMessage(`Speaker naming completed for ${meeting.name}.`);
     } catch (error) {

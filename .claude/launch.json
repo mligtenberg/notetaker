@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "notetaker",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["nx", "serve", "notetaker"],
+      "port": 4200
+    }
+  ]
+}

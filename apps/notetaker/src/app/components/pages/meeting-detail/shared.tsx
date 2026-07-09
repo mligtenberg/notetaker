@@ -8,7 +8,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { SpeakerTurn } from '@notetaker/engine';
-import type { MeetingArtifactKind } from '@notetaker/filesystem';
+import type { MeetingDerivationKind } from '@notetaker/filesystem';
 import styles from '../../../app.module.css';
 import { Dialog } from '../../common/dialog';
 import { type MeetingTab } from '../../../app-routing';
@@ -198,9 +198,9 @@ export function displaySpeakerName(
 export function useSpeakerNames(
   meetingId: string,
   speakers: string[],
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>,
 ): [Record<string, string>, Dispatch<SetStateAction<Record<string, string>>>] {
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
@@ -209,7 +209,7 @@ export function useSpeakerNames(
   useEffect(() => {
     let cancelled = false;
 
-    loadArtifact<Record<string, string>>(meetingId, 'speaker-names').then(
+    loadDerivation<Record<string, string>>(meetingId, 'speaker-names').then(
       (savedNames) => {
         if (!cancelled) {
           setSpeakerNames(savedNames ?? {});
@@ -220,7 +220,7 @@ export function useSpeakerNames(
     return () => {
       cancelled = true;
     };
-  }, [meetingId, speakerKey, loadArtifact]);
+  }, [meetingId, speakerKey, loadDerivation]);
 
   return [speakerNames, setSpeakerNames];
 }
@@ -229,22 +229,22 @@ export async function saveSpeakerNameArtifact(
   meetingId: string,
   speaker: string,
   name: string,
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>,
-  saveArtifact: <U>(
+  saveDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: U,
   ) => Promise<void>,
 ): Promise<void> {
-  const savedNames = await loadArtifact<Record<string, string>>(
+  const savedNames = await loadDerivation<Record<string, string>>(
     meetingId,
     'speaker-names',
   );
 
-  await saveArtifact(meetingId, 'speaker-names', {
+  await saveDerivation(meetingId, 'speaker-names', {
     ...(savedNames ?? {}),
     [speaker]: name,
   });
@@ -885,14 +885,14 @@ export function openWordAssignmentPopover(
   });
 }
 
-interface ArtifactTabProps<T> {
+interface DerivationTabProps<T> {
   meetingId: string;
-  kind: MeetingArtifactKind;
+  kind: MeetingDerivationKind;
   present: boolean;
   revision: number;
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>;
   render: (
     data: T,
@@ -900,14 +900,14 @@ interface ArtifactTabProps<T> {
   ) => ReactElement;
 }
 
-export function ArtifactTab<T>({
+export function DerivationTab<T>({
   meetingId,
   kind,
   present,
   revision,
-  loadArtifact,
+  loadDerivation,
   render,
-}: ArtifactTabProps<T>) {
+}: DerivationTabProps<T>) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -924,7 +924,7 @@ export function ArtifactTab<T>({
 
     setLoading(true);
     setError(null);
-    loadArtifact<T>(meetingId, kind)
+    loadDerivation<T>(meetingId, kind)
       .then((result) => {
         if (!cancelled) {
           setData(result);
@@ -941,7 +941,7 @@ export function ArtifactTab<T>({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, kind, present, revision, loadArtifact]);
+  }, [meetingId, kind, present, revision, loadDerivation]);
 
   if (!present) {
     return (

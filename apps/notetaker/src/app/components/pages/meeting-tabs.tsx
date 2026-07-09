@@ -19,6 +19,8 @@ const TAB_LABELS: Record<MeetingTab, string> = {
   diarization: 'Diarization',
   'word-sync': 'Word sync',
   'speaker-names': 'Speaker names',
+  chat: 'Chat',
+  artifacts: 'Artifacts',
 };
 
 const TABS: MeetingTab[] = [
@@ -28,6 +30,8 @@ const TABS: MeetingTab[] = [
   'diarization',
   'word-sync',
   'speaker-names',
+  'chat',
+  'artifacts',
 ];
 
 function getTabStatus(
@@ -35,14 +39,16 @@ function getTabStatus(
   meeting: StoredMeetingSummary,
   speakerNamesSaved: boolean,
 ): 'completed' | 'pending' {
-  if (tab === 'details') return 'completed';
+  if (tab === 'details' || tab === 'chat' || tab === 'artifacts') {
+    return 'completed';
+  }
   if (tab === 'recording') {
     return meeting.recordingFileName !== null ? 'completed' : 'pending';
   }
   if (tab === 'speaker-names') {
     return speakerNamesSaved ? 'completed' : 'pending';
   }
-  return meeting.artifacts[tab] ? 'completed' : 'pending';
+  return meeting.derivations[tab] ? 'completed' : 'pending';
 }
 
 export function MeetingTabs({

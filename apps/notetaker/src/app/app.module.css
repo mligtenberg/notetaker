@@ -1593,3 +1593,506 @@
     width: 100%;
   }
 }
+
+/* --- Chat tab --- */
+.chatLayout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1rem;
+  min-height: 60vh;
+}
+
+.chatThreadList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+  padding-right: 1rem;
+}
+
+.chatThreadList ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chatThreadList li {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+}
+
+.chatNewThread {
+  width: 100%;
+}
+
+.chatThreadItem {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  background: rgba(148, 163, 184, 0.08);
+  color: #e6edf7;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.chatThreadItem[data-active='true'] {
+  background: rgba(98, 196, 246, 0.18);
+  color: #cfeeff;
+}
+
+.chatThreadItem small {
+  color: #8696aa;
+  font-weight: 400;
+}
+
+.chatThreadDelete {
+  background: transparent;
+  color: #8696aa;
+  padding: 0 0.5rem;
+}
+
+.chatMain {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.chatStatusBanner {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: rgba(148, 163, 184, 0.1);
+  color: #9ab2bd;
+}
+
+.chatStatusBanner[data-status='draft'] {
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+}
+
+.chatStatusBanner[data-status='finalized'] {
+  background: rgba(167, 243, 208, 0.1);
+  color: #a7f3d0;
+}
+
+.chatMessages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.chatMessage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-width: 80%;
+  padding: 0.6rem 0.85rem;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.chatMessage[data-role='user'] {
+  align-self: flex-end;
+  background: #62c4f6;
+  color: #0d1820;
+}
+
+.chatMessage[data-role='assistant'] {
+  align-self: flex-start;
+  background: rgba(148, 163, 184, 0.12);
+  color: #e6edf7;
+}
+
+.chatFootnote {
+  color: #8696aa;
+  font-size: 0.75rem;
+}
+
+.chatMessage[data-role='user'] .chatFootnote {
+  color: rgba(13, 24, 32, 0.65);
+}
+
+.chatActivity {
+  list-style: none;
+  margin: 0 0 0.35rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: #9ab2bd;
+}
+
+.chatActivity li[data-status='running']::before {
+  content: '⟳ ';
+}
+
+.chatActivity li[data-status='done']::before {
+  content: '✓ ';
+  color: #a7f3d0;
+}
+
+.chatError {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border-radius: 12px;
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+  font-size: 0.9rem;
+}
+
+.chatComposer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.chatComposer textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 2.6rem;
+  background: rgba(8, 17, 31, 0.7);
+  color: #e6edf7;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+}
+
+@media (max-width: 720px) {
+  .chatLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .chatThreadList {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    padding-right: 0;
+    padding-bottom: 0.75rem;
+  }
+
+  .chatMessage {
+    max-width: 100%;
+  }
+}
+
+/* --- Artifacts tab --- */
+.artifactBrowser {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 1rem;
+  min-height: 60vh;
+}
+
+.artifactList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+  padding-right: 1rem;
+}
+
+.artifactListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.artifactListHeader h3 {
+  margin: 0;
+}
+
+.artifactList ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.artifactListItem {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  background: rgba(148, 163, 184, 0.08);
+  color: #e6edf7;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.artifactListItem[data-active='true'] {
+  background: rgba(98, 196, 246, 0.18);
+  color: #cfeeff;
+}
+
+.artifactListItem small {
+  color: #8696aa;
+  font-weight: 400;
+}
+
+.artifactName {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  word-break: break-word;
+}
+
+.artifactOrigin {
+  font-style: normal;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  color: #9ab2bd;
+}
+
+.artifactReader {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.artifactReaderHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.artifactReaderHeader h3 {
+  margin: 0;
+  word-break: break-word;
+}
+
+.artifactReaderActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.artifactVersionNote {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #fde68a;
+}
+
+.artifactContent {
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background: rgba(8, 17, 31, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #e6edf7;
+  overflow-x: auto;
+}
+
+/* --- Markdown rendering --- */
+.markdown {
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 1.1em 0 0.5em;
+  line-height: 1.25;
+}
+
+.markdown h1 {
+  font-size: 1.4rem;
+}
+
+.markdown h2 {
+  font-size: 1.2rem;
+}
+
+.markdown h3 {
+  font-size: 1.05rem;
+}
+
+.markdown p {
+  margin: 0.5em 0;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0.5em 0;
+  padding-left: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.markdown li {
+  list-style: revert;
+}
+
+.markdown a {
+  color: #62c4f6;
+  text-decoration: underline;
+}
+
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: rgba(148, 163, 184, 0.18);
+  padding: 0.1em 0.35em;
+  border-radius: 5px;
+}
+
+.markdown .markdownCode {
+  margin: 0.6em 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  background: rgba(8, 17, 31, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  overflow-x: auto;
+}
+
+.markdown .markdownCode code {
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.markdown blockquote {
+  margin: 0.6em 0;
+  padding: 0.2em 0 0.2em 0.9rem;
+  border-left: 3px solid rgba(98, 196, 246, 0.5);
+  color: #9ab2bd;
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  margin: 1em 0;
+}
+
+.chatMessage[data-role='assistant'] .markdown {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .artifactBrowser {
+    grid-template-columns: 1fr;
+  }
+
+  .artifactList {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    padding-right: 0;
+    padding-bottom: 0.75rem;
+  }
+}
+
+/* --- Chat budgets --- */
+.budgets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.07);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.budgetRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.budgetLabel {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.budgetLabel small {
+  color: #8696aa;
+}
+
+.budgetLabel .budgetOver {
+  color: #fca5a5;
+}
+
+.budgetBar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(8, 17, 31, 0.7);
+}
+
+.budgetSeg {
+  height: 100%;
+}
+
+.budgetSegLanguage {
+  background: #62c4f6;
+}
+
+.budgetSegKv {
+  background: #a7f3d0;
+}
+
+.budgetSegPipeline {
+  background: #fbbf24;
+}
+
+.budgetSegTokens {
+  background: #c084fc;
+}
+
+.budgetLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  font-size: 0.7rem;
+  color: #8696aa;
+}
+
+.budgetLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.budgetDot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  display: inline-block;
+}

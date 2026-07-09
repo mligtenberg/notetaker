@@ -1,12 +1,15 @@
 import { ModelVersionManifestEntry } from '@notetaker/model-manager';
 import { pipeline, PipelineType } from '@huggingface/transformers';
 
+export type PipelineDevice = 'auto' | 'webgpu' | 'wasm' | 'cpu';
+
 export class PipelineFactory {
   constructor() {}
 
   getPipeline(
     manifest: ModelVersionManifestEntry,
     additionalOptions?: Omit<Parameters<typeof pipeline>[2], 'dtype' | 'device'>,
+    deviceOverride?: PipelineDevice,
   ) {
     return pipeline(
       this.#getPipelineType(manifest),
@@ -17,14 +20,18 @@ export class PipelineFactory {
           Parameters<typeof pipeline>[2],
           { dtype?: unknown }
         >['dtype'],
-        device: this.#getDevice(manifest),
+        device: deviceOverride ?? this.#getDevice(manifest),
         local_files_only: true,
       },
     );
   }
 
   #getDevice(manifest: ModelVersionManifestEntry) {
-    if (manifest.model === 'transcription') {
+    // Transcription and the language model run on WASM: WebGPU is unstable for
+    // them in-browser (transcription's Whisper encoder; the language model's
+    // large multi-step chat prompts exceed GPU buffer limits). WASM is slower
+    // but has no such limits, so context is bounded only by the memory budget.
+    if (manifest.model === 'transcription' || manifest.model === 'language') {
       return 'wasm';
     }
 

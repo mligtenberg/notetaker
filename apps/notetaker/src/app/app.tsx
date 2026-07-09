@@ -57,7 +57,7 @@ export function App() {
     meetings: meetingsController.meetings,
     selectedMeetingId: meetingsController.selectedMeetingId,
     refreshMeetings: meetingsController.refreshMeetings,
-    setArtifactRevision: meetingsController.setArtifactRevision,
+    setDerivationRevision: meetingsController.setDerivationRevision,
     getActiveModelVersion: modelController.getActiveModelVersion,
   });
 
@@ -206,16 +206,17 @@ export function App() {
                   status={meetingsController.status}
                   engineStatus={engineRunner.engineStatus}
                   engineMessage={engineRunner.engineMessage}
-                  artifactRevision={meetingsController.artifactRevision}
+                  derivationRevision={meetingsController.derivationRevision}
                   liveTranscriptSegments={
                     engineRunner.engineStatus === 'processing' &&
                     engineRunner.liveTranscriptMeetingId === viewedMeeting.id
                       ? engineRunner.liveTranscriptSegments
                       : []
                   }
-                  loadArtifact={meetingsController.loadMeetingArtifact}
-                  saveArtifact={meetingsController.saveMeetingArtifact}
-                  deleteArtifact={meetingsController.deleteMeetingArtifact}
+                  meetingsRepoRef={meetingsController.meetingsRepoRef}
+                  loadDerivation={meetingsController.loadMeetingDerivation}
+                  saveDerivation={meetingsController.saveMeetingDerivation}
+                  deleteDerivation={meetingsController.deleteMeetingDerivation}
                   onUpdateMeeting={(id, patch) =>
                     void meetingsController.updateMeeting(id, patch)
                   }

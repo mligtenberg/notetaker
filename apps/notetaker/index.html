@@ -8,6 +8,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="stylesheet" href="/src/styles.css" />
+
+    <!--
+      Static hosts such as GitHub Pages cannot send the
+      Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy headers that
+      SharedArrayBuffer-backed multithreaded WASM inference relies on. This shim
+      registers a service worker that re-adds them client-side, restoring
+      `crossOriginIsolated`. It is a no-op where the headers already exist (the
+      Vite dev/preview server). See gzuidhof/coi-serviceworker.
+    -->
+    <script src="/coi-serviceworker.min.js"></script>
   </head>
   <body>
     <div id="root"></div>

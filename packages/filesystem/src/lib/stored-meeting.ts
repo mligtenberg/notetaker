@@ -1,4 +1,4 @@
-export type MeetingArtifactKind =
+export type MeetingDerivationKind =
   | 'transcript'
   | 'diarization'
   | 'word-sync'
@@ -19,5 +19,5 @@ export interface StoredMeeting {
 }
 
 export interface StoredMeetingSummary extends StoredMeeting {
-  artifacts: Record<MeetingArtifactKind, boolean>;
+  derivations: Record<MeetingDerivationKind, boolean>;
 }

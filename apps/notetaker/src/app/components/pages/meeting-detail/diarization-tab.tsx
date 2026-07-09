@@ -5,7 +5,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { SpeakerTurn } from '@notetaker/engine';
-import type { MeetingArtifactKind } from '@notetaker/filesystem';
+import type { MeetingDerivationKind } from '@notetaker/filesystem';
 import styles from '../../../app.module.css';
 import { ExportControls } from '../export-controls';
 import {
@@ -31,13 +31,13 @@ interface DiarizationArtifactViewProps {
   recordingMimeType: string | null;
   turns: SpeakerTurn[];
   setTurns: Dispatch<SetStateAction<SpeakerTurn[] | null>>;
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>;
-  saveArtifact: <U>(
+  saveDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: U,
   ) => Promise<void>;
   onSpeakerNamesSaved: () => void;
@@ -52,8 +52,8 @@ export function DiarizationArtifactView({
   recordingMimeType,
   turns,
   setTurns,
-  loadArtifact,
-  saveArtifact,
+  loadDerivation,
+  saveDerivation,
   onSpeakerNamesSaved,
   formatTimestamp,
 }: DiarizationArtifactViewProps) {
@@ -63,7 +63,7 @@ export function DiarizationArtifactView({
   const [speakerNames, setSpeakerNames] = useSpeakerNames(
     meetingId,
     speakers,
-    loadArtifact,
+    loadDerivation,
   );
 
   useEffect(() => {
@@ -74,8 +74,8 @@ export function DiarizationArtifactView({
     }
 
     setTurns(normalizedTurns);
-    void saveArtifact(meetingId, 'diarization', normalizedTurns);
-  }, [meetingId, saveArtifact, setTurns, turns]);
+    void saveDerivation(meetingId, 'diarization', normalizedTurns);
+  }, [meetingId, saveDerivation, setTurns, turns]);
 
   async function handleMerge(
     sourceSpeaker: string,
@@ -83,7 +83,7 @@ export function DiarizationArtifactView({
   ): Promise<void> {
     const mergedTurns = mergeSpeakerTurns(turns, sourceSpeaker, targetSpeaker);
 
-    await saveArtifact(meetingId, 'diarization', mergedTurns);
+    await saveDerivation(meetingId, 'diarization', mergedTurns);
     setTurns(mergedTurns);
     setSpeakerMenu(null);
   }
@@ -93,8 +93,8 @@ export function DiarizationArtifactView({
       meetingId,
       speaker,
       name,
-      loadArtifact,
-      saveArtifact,
+      loadDerivation,
+      saveDerivation,
     );
     setSpeakerNames((current) => ({ ...current, [speaker]: name }));
     onSpeakerNamesSaved();

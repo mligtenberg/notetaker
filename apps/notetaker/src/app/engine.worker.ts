@@ -5,6 +5,8 @@ import {
 } from '@notetaker/engine';
 import {FileSystem, type LanguageMode} from '@notetaker/filesystem';
 import {ModelManager} from '@notetaker/model-manager';
+import {handleChatRequest} from './chat/chat-worker-handler';
+import type {ChatWorkerRequest} from './chat/chat-worker-protocol';
 
 interface WorkerTranscriptSegment {
     text: string;
@@ -154,6 +156,20 @@ function getModelManager(): Promise<ModelManager> {
 }
 
 self.addEventListener('message', (event: MessageEvent<EngineWorkerRequest>) => {
+    // Chat turns share this worker so the language model instance is shared with
+    // the pipeline rather than loaded a second time (which would double memory).
+    const maybeChat = event.data as unknown as ChatWorkerRequest;
+    if (maybeChat.mode === 'chat') {
+        void (async () => {
+            const modelManager = await getModelManager();
+            configureTransformersCache(modelManager);
+            await handleChatRequest(maybeChat, modelManager, (message) =>
+                (self as DedicatedWorkerGlobalScope).postMessage(message),
+            );
+        })();
+        return;
+    }
+
     const {
         id,
         mode = 'engine',

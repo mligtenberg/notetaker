@@ -61,7 +61,9 @@ export type MeetingTab =
   | 'transcript'
   | 'diarization'
   | 'word-sync'
-  | 'speaker-names';
+  | 'speaker-names'
+  | 'chat'
+  | 'artifacts';
 
 export const MEETING_TABS: MeetingTab[] = [
   'details',
@@ -70,6 +72,8 @@ export const MEETING_TABS: MeetingTab[] = [
   'diarization',
   'word-sync',
   'speaker-names',
+  'chat',
+  'artifacts',
 ];
 
 export function resolveMeetingTab(pathname: string): MeetingTab {

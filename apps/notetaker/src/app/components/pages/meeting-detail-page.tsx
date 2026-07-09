@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { SpeakerTurn, Transcript } from '@notetaker/engine';
 import type {
   LanguageMode,
-  MeetingArtifactKind,
+  MeetingDerivationKind,
+  MeetingsRepository,
   StoredMeetingSummary,
 } from '@notetaker/filesystem';
 import styles from '../../app.module.css';
@@ -18,8 +19,10 @@ import {
 import { DiarizationArtifactView } from './meeting-detail/diarization-tab';
 import { WordSyncArtifactTab } from './meeting-detail/word-sync-tab';
 import { SpeakerNamesTab } from './meeting-detail/speaker-names-tab';
+import { ChatTab } from './meeting-detail/chat-tab';
+import { ArtifactsTab } from './meeting-detail/artifacts-tab';
 import {
-  ArtifactTab,
+  DerivationTab,
   ArtifactToolbar,
   getActiveMediaRef,
   isEditableTarget,
@@ -38,20 +41,21 @@ interface MeetingDetailPageProps {
   status: RecorderStatus;
   engineStatus: EngineStatus;
   engineMessage: string;
-  artifactRevision: number;
+  derivationRevision: number;
   liveTranscriptSegments: LiveTranscriptSegment[];
-  loadArtifact: <T>(
+  meetingsRepoRef: RefObject<MeetingsRepository | null>;
+  loadDerivation: <T>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<T | null>;
-  saveArtifact: <T>(
+  saveDerivation: <T>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: T,
   ) => Promise<void>;
-  deleteArtifact: (
+  deleteDerivation: (
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<void>;
   onUpdateMeeting: (
     id: string,
@@ -86,11 +90,12 @@ export function MeetingDetailPage({
   status,
   engineStatus,
   engineMessage,
-  artifactRevision,
+  derivationRevision,
   liveTranscriptSegments,
-  loadArtifact,
-  saveArtifact,
-  deleteArtifact,
+  meetingsRepoRef,
+  loadDerivation,
+  saveDerivation,
+  deleteDerivation,
   onUpdateMeeting,
   onStartRecording,
   onStopRecording,
@@ -109,7 +114,7 @@ export function MeetingDetailPage({
   formatTimestamp,
 }: MeetingDetailPageProps) {
   const [speakerNamesSaved, setSpeakerNamesSaved] = useState(
-    meeting.artifacts['speaker-names'],
+    meeting.derivations['speaker-names'],
   );
   const [loggingAvailableTab, setLoggingAvailableTab] = useState<MeetingTab | null>(
     null,
@@ -120,8 +125,8 @@ export function MeetingDetailPage({
   const wordSyncAudioRef = useRef<HTMLMediaElement | null>(null);
 
   useEffect(() => {
-    setSpeakerNamesSaved(meeting.artifacts['speaker-names']);
-  }, [meeting.id, meeting.artifacts]);
+    setSpeakerNamesSaved(meeting.derivations['speaker-names']);
+  }, [meeting.id, meeting.derivations]);
 
   useEffect(() => {
     setLoggingAvailableTab(null);
@@ -156,9 +161,9 @@ export function MeetingDetailPage({
   }, [activeTab]);
 
   const hasRecording = meeting.recordingFileName !== null;
-  const hasTranscript = meeting.artifacts.transcript;
-  const hasDiarization = meeting.artifacts.diarization;
-  const hasWordSync = meeting.artifacts['word-sync'];
+  const hasTranscript = meeting.derivations.transcript;
+  const hasDiarization = meeting.derivations.diarization;
+  const hasWordSync = meeting.derivations['word-sync'];
   const processing = engineStatus === 'processing';
 
   return (
@@ -229,12 +234,12 @@ export function MeetingDetailPage({
           ) : processing ? (
             <p className={styles.empty}>Waiting for speech...</p>
           ) : (
-            <ArtifactTab<Transcript>
+            <DerivationTab<Transcript>
               meetingId={meeting.id}
               kind="transcript"
-              present={meeting.artifacts.transcript}
-              revision={artifactRevision}
-              loadArtifact={loadArtifact}
+              present={meeting.derivations.transcript}
+              revision={derivationRevision}
+              loadDerivation={loadDerivation}
               render={(transcript, setTranscript) => (
                 <TranscriptArtifactView
                   meetingId={meeting.id}
@@ -244,8 +249,8 @@ export function MeetingDetailPage({
                   recordingMimeType={meeting.recordingMimeType}
                   transcript={transcript}
                   setTranscript={setTranscript}
-                  saveArtifact={saveArtifact}
-                  deleteArtifact={deleteArtifact}
+                  saveDerivation={saveDerivation}
+                  deleteDerivation={deleteDerivation}
                   formatTimestamp={formatTimestamp}
                 />
               )}
@@ -269,12 +274,12 @@ export function MeetingDetailPage({
             onOpenLogging={() => onOpenLogging('engine')}
             showLogging={loggingAvailableTab === 'diarization'}
           />
-          <ArtifactTab<SpeakerTurn[]>
+          <DerivationTab<SpeakerTurn[]>
             meetingId={meeting.id}
             kind="diarization"
-            present={meeting.artifacts.diarization}
-            revision={artifactRevision}
-            loadArtifact={loadArtifact}
+            present={meeting.derivations.diarization}
+            revision={derivationRevision}
+            loadDerivation={loadDerivation}
             render={(turns, setTurns) => (
               <DiarizationArtifactView
                 meetingId={meeting.id}
@@ -284,8 +289,8 @@ export function MeetingDetailPage({
                 recordingMimeType={meeting.recordingMimeType}
                 turns={turns}
                 setTurns={setTurns}
-                loadArtifact={loadArtifact}
-                saveArtifact={saveArtifact}
+                loadDerivation={loadDerivation}
+                saveDerivation={saveDerivation}
                 onSpeakerNamesSaved={() => setSpeakerNamesSaved(true)}
                 formatTimestamp={formatTimestamp}
               />
@@ -323,10 +328,10 @@ export function MeetingDetailPage({
             meetingUrl={meetingUrl}
             audioRef={wordSyncAudioRef}
             recordingMimeType={meeting.recordingMimeType}
-            present={meeting.artifacts['word-sync']}
-            revision={artifactRevision}
-            loadArtifact={loadArtifact}
-            saveArtifact={saveArtifact}
+            present={meeting.derivations['word-sync']}
+            revision={derivationRevision}
+            loadDerivation={loadDerivation}
+            saveDerivation={saveDerivation}
             onSpeakerNamesSaved={() => setSpeakerNamesSaved(true)}
             formatTimestamp={formatTimestamp}
           />
@@ -355,13 +360,32 @@ export function MeetingDetailPage({
           <SpeakerNamesTab
             meetingId={meeting.id}
             meetingName={meeting.name}
-            present={meeting.artifacts.diarization}
-            revision={artifactRevision}
-            loadArtifact={loadArtifact}
-            saveArtifact={saveArtifact}
+            present={meeting.derivations.diarization}
+            revision={derivationRevision}
+            loadDerivation={loadDerivation}
+            saveDerivation={saveDerivation}
             onSaved={() => setSpeakerNamesSaved(true)}
           />
         </>
+      ) : null}
+
+      {activeTab === 'chat' ? (
+        <ChatTab
+          meetingsRepoRef={meetingsRepoRef}
+          meetingId={meeting.id}
+          meetingTitle={meeting.name}
+          isRecording={isRecording}
+          hasTranscript={hasTranscript}
+          liveTranscriptSegments={liveTranscriptSegments}
+        />
+      ) : null}
+
+      {activeTab === 'artifacts' ? (
+        <ArtifactsTab
+          meetingsRepoRef={meetingsRepoRef}
+          meetingId={meeting.id}
+          formatDate={formatDate}
+        />
       ) : null}
     </Page>
   );

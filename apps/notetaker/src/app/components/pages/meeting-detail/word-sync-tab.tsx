@@ -7,7 +7,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { SpeakerTurn, Transcript } from '@notetaker/engine';
-import type { MeetingArtifactKind } from '@notetaker/filesystem';
+import type { MeetingDerivationKind } from '@notetaker/filesystem';
 import styles from '../../../app.module.css';
 import { ExportControls } from '../export-controls';
 import {
@@ -41,13 +41,13 @@ interface WordSyncArtifactTabProps {
   recordingMimeType: string | null;
   present: boolean;
   revision: number;
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>;
-  saveArtifact: <U>(
+  saveDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: U,
   ) => Promise<void>;
   onSpeakerNamesSaved: () => void;
@@ -62,8 +62,8 @@ export function WordSyncArtifactTab({
   recordingMimeType,
   present,
   revision,
-  loadArtifact,
-  saveArtifact,
+  loadDerivation,
+  saveDerivation,
   onSpeakerNamesSaved,
   formatTimestamp,
 }: WordSyncArtifactTabProps) {
@@ -133,9 +133,9 @@ export function WordSyncArtifactTab({
     setLoading(true);
     setError(null);
     Promise.all([
-      loadArtifact<TimestampedWord[]>(meetingId, 'word-sync'),
-      loadArtifact<SpeakerTurn[]>(meetingId, 'diarization'),
-      loadArtifact<Record<string, string>>(meetingId, 'speaker-names'),
+      loadDerivation<TimestampedWord[]>(meetingId, 'word-sync'),
+      loadDerivation<SpeakerTurn[]>(meetingId, 'diarization'),
+      loadDerivation<Record<string, string>>(meetingId, 'speaker-names'),
     ])
       .then(([words, diarization, speakerNames]) => {
         if (cancelled) {
@@ -169,7 +169,7 @@ export function WordSyncArtifactTab({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, present, revision, loadArtifact]);
+  }, [meetingId, present, revision, loadDerivation]);
 
   if (!present) {
     return (
@@ -222,7 +222,7 @@ export function WordSyncArtifactTab({
                 words,
               );
 
-              await saveArtifact(meetingId, 'diarization', alignedDiarization);
+              await saveDerivation(meetingId, 'diarization', alignedDiarization);
               setDiarization(alignedDiarization);
               setTurns(buildSpeakerWordTurns(words, alignedDiarization));
             }}
@@ -250,8 +250,8 @@ export function WordSyncArtifactTab({
                 meetingId,
                 speaker,
                 name,
-                loadArtifact,
-                saveArtifact,
+                loadDerivation,
+                saveDerivation,
               );
               setSpeakerNames((current) => ({ ...current, [speaker]: name }));
               onSpeakerNamesSaved();
@@ -264,7 +264,7 @@ export function WordSyncArtifactTab({
                 targetSpeaker,
               );
 
-              await saveArtifact(meetingId, 'diarization', mergedDiarization);
+              await saveDerivation(meetingId, 'diarization', mergedDiarization);
               setDiarization(mergedDiarization);
               setTurns(buildSpeakerWordTurns(words, mergedDiarization));
               setSpeakerMenu(null);
@@ -277,14 +277,14 @@ export function WordSyncArtifactTab({
               }
 
               const nextWords = replaceWordSyncTurnWords(words, turn, text);
-              const transcript = await loadArtifact<Transcript>(
+              const transcript = await loadDerivation<Transcript>(
                 meetingId,
                 'transcript',
               );
 
-              await saveArtifact(meetingId, 'word-sync', nextWords);
+              await saveDerivation(meetingId, 'word-sync', nextWords);
               if (transcript !== null) {
-                await saveArtifact(
+                await saveDerivation(
                   meetingId,
                   'transcript',
                   replaceTranscriptTextForTimeRange(transcript, turn, text),
@@ -315,7 +315,7 @@ export function WordSyncArtifactTab({
               direction,
             );
 
-            await saveArtifact(meetingId, 'diarization', adjustedDiarization);
+            await saveDerivation(meetingId, 'diarization', adjustedDiarization);
             setDiarization(adjustedDiarization);
             setTurns(buildSpeakerWordTurns(words, adjustedDiarization));
             setWordAssignmentPopover(null);
@@ -329,7 +329,7 @@ export function WordSyncArtifactTab({
               speaker,
             );
 
-            await saveArtifact(meetingId, 'diarization', adjustedDiarization);
+            await saveDerivation(meetingId, 'diarization', adjustedDiarization);
             setDiarization(adjustedDiarization);
             setTurns(buildSpeakerWordTurns(words, adjustedDiarization));
             setWordAssignmentPopover(null);

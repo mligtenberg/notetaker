@@ -12,7 +12,7 @@ interface MeetingsPageProps {
   formatDate: (timestamp: number) => string;
 }
 
-const ARTIFACT_LABELS: Record<keyof StoredMeetingSummary['artifacts'], string> =
+const DERIVATION_LABELS: Record<keyof StoredMeetingSummary['derivations'], string> =
   {
     transcript: 'Transcript',
     diarization: 'Diarization',
@@ -82,15 +82,15 @@ export function MeetingsPage({
                     Recording
                   </li>
                   {(
-                    Object.entries(ARTIFACT_LABELS) as [
-                      keyof StoredMeetingSummary['artifacts'],
+                    Object.entries(DERIVATION_LABELS) as [
+                      keyof StoredMeetingSummary['derivations'],
                       string,
                     ][]
                   ).map(([kind, label]) => (
                     <li
                       key={kind}
                       data-status={
-                        meeting.artifacts[kind] ? 'completed' : 'pending'
+                        meeting.derivations[kind] ? 'completed' : 'pending'
                       }
                     >
                       {label}

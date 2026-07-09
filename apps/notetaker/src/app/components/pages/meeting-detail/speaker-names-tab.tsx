@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SpeakerTurn } from '@notetaker/engine';
-import type { MeetingArtifactKind } from '@notetaker/filesystem';
+import type { MeetingDerivationKind } from '@notetaker/filesystem';
 import styles from '../../../app.module.css';
 import { Card } from '../../common/card';
 import { ExportControls } from '../export-controls';
@@ -11,13 +11,13 @@ interface SpeakerNamesTabProps {
   meetingName: string;
   present: boolean;
   revision: number;
-  loadArtifact: <U>(
+  loadDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<U | null>;
-  saveArtifact: <U>(
+  saveDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: U,
   ) => Promise<void>;
   onSaved: () => void;
@@ -28,8 +28,8 @@ export function SpeakerNamesTab({
   meetingName,
   present,
   revision,
-  loadArtifact,
-  saveArtifact,
+  loadDerivation,
+  saveDerivation,
   onSaved,
 }: SpeakerNamesTabProps) {
   const [names, setNames] = useState<Record<string, string> | null>(null);
@@ -51,8 +51,8 @@ export function SpeakerNamesTab({
     setLoading(true);
     setError(null);
     Promise.all([
-      loadArtifact<SpeakerTurn[]>(meetingId, 'diarization'),
-      loadArtifact<Record<string, string>>(meetingId, 'speaker-names'),
+      loadDerivation<SpeakerTurn[]>(meetingId, 'diarization'),
+      loadDerivation<Record<string, string>>(meetingId, 'speaker-names'),
     ])
       .then(([diarization, savedNames]) => {
         if (cancelled) {
@@ -85,11 +85,11 @@ export function SpeakerNamesTab({
     return () => {
       cancelled = true;
     };
-  }, [meetingId, present, revision, loadArtifact]);
+  }, [meetingId, present, revision, loadDerivation]);
 
   async function saveNames(nextNames: Record<string, string>): Promise<void> {
     setNames(nextNames);
-    await saveArtifact(meetingId, 'speaker-names', nextNames);
+    await saveDerivation(meetingId, 'speaker-names', nextNames);
     onSaved();
   }
 

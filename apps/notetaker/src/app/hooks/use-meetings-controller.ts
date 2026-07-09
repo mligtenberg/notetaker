@@ -4,7 +4,7 @@ import {
   FileSystem,
   MeetingsRepository,
   type LanguageMode,
-  type MeetingArtifactKind,
+  type MeetingDerivationKind,
   type StoredMeetingSummary,
 } from '@notetaker/filesystem';
 import type { NavigateFunction } from 'react-router-dom';
@@ -27,7 +27,7 @@ export function useMeetingsController({
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [message, setMessage] = useState('');
   const [meetings, setMeetings] = useState<StoredMeetingSummary[]>([]);
-  const [artifactRevision, setArtifactRevision] = useState(0);
+  const [derivationRevision, setDerivationRevision] = useState(0);
   const [meetingUrls, setMeetingUrls] = useState<Record<string, string>>({});
   const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [selectedMeetingId, setSelectedMeetingId] = useState('');
@@ -161,22 +161,22 @@ export function useMeetingsController({
     }
   }
 
-  const loadMeetingArtifact = useCallback(
-    <T,>(meetingId: string, kind: MeetingArtifactKind): Promise<T | null> => {
+  const loadMeetingDerivation = useCallback(
+    <T,>(meetingId: string, kind: MeetingDerivationKind): Promise<T | null> => {
       const repo = meetingsRepoRef.current;
 
       if (repo === null) {
         return Promise.resolve(null);
       }
 
-      return repo.loadArtifact<T>(meetingId, kind);
+      return repo.loadDerivation<T>(meetingId, kind);
     },
     [],
   );
 
-  async function saveMeetingArtifact<T>(
+  async function saveMeetingDerivation<T>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: T,
   ): Promise<void> {
     const repo = meetingsRepoRef.current;
@@ -185,14 +185,14 @@ export function useMeetingsController({
       throw new Error('Meetings repository is not ready.');
     }
 
-    await repo.saveArtifact(meetingId, kind, data);
+    await repo.saveDerivation(meetingId, kind, data);
     await refreshMeetings(repo);
-    setArtifactRevision((current) => current + 1);
+    setDerivationRevision((current) => current + 1);
   }
 
-  async function deleteMeetingArtifact(
+  async function deleteMeetingDerivation(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ): Promise<void> {
     const repo = meetingsRepoRef.current;
 
@@ -200,9 +200,9 @@ export function useMeetingsController({
       throw new Error('Meetings repository is not ready.');
     }
 
-    await repo.deleteArtifact(meetingId, kind);
+    await repo.deleteDerivation(meetingId, kind);
     await refreshMeetings(repo);
-    setArtifactRevision((current) => current + 1);
+    setDerivationRevision((current) => current + 1);
   }
 
   async function updateMeeting(
@@ -397,17 +397,17 @@ export function useMeetingsController({
     status,
     message,
     meetings,
-    artifactRevision,
+    derivationRevision,
     meetingUrls,
     creatingMeeting,
     selectedMeetingId,
     recordingMeetingId,
     refreshMeetings,
-    setArtifactRevision,
+    setDerivationRevision,
     createMeeting,
-    loadMeetingArtifact,
-    saveMeetingArtifact,
-    deleteMeetingArtifact,
+    loadMeetingDerivation,
+    saveMeetingDerivation,
+    deleteMeetingDerivation,
     updateMeeting,
     startRecording,
     stopRecording,

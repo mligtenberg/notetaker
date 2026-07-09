@@ -9,6 +9,9 @@ const crossOriginIsolationHeaders = {
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
+  // Served from "/" locally; GitHub Pages serves the project site under
+  // "/<repo>/", so CI sets PUBLIC_BASE_PATH to that subpath at build time.
+  base: process.env.PUBLIC_BASE_PATH ?? '/',
   cacheDir: '../../node_modules/.vite/apps/notetaker',
   server: {
     port: 4200,

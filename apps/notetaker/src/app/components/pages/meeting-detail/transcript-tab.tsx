@@ -7,7 +7,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { Transcript } from '@notetaker/engine';
-import type { MeetingArtifactKind } from '@notetaker/filesystem';
+import type { MeetingDerivationKind } from '@notetaker/filesystem';
 import styles from '../../../app.module.css';
 import { ExportControls } from '../export-controls';
 import { EditSegmentDialog, RecordingPlayback, playRecordingFrom } from './shared';
@@ -25,14 +25,14 @@ interface TranscriptArtifactViewProps {
   recordingMimeType: string | null;
   transcript: Transcript;
   setTranscript: Dispatch<SetStateAction<Transcript | null>>;
-  saveArtifact: <U>(
+  saveDerivation: <U>(
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
     data: U,
   ) => Promise<void>;
-  deleteArtifact: (
+  deleteDerivation: (
     meetingId: string,
-    kind: MeetingArtifactKind,
+    kind: MeetingDerivationKind,
   ) => Promise<void>;
   formatTimestamp: (seconds: number) => string;
 }
@@ -45,8 +45,8 @@ export function TranscriptArtifactView({
   recordingMimeType,
   transcript,
   setTranscript,
-  saveArtifact,
-  deleteArtifact,
+  saveDerivation,
+  deleteDerivation,
   formatTimestamp,
 }: TranscriptArtifactViewProps) {
   const [segmentMenu, setSegmentMenu] =
@@ -65,9 +65,9 @@ export function TranscriptArtifactView({
       segments: nextSegments,
     };
 
-    await saveArtifact(meetingId, 'transcript', nextTranscript);
-    await deleteArtifact(meetingId, 'word-sync');
-    await deleteArtifact(meetingId, 'speaker-names');
+    await saveDerivation(meetingId, 'transcript', nextTranscript);
+    await deleteDerivation(meetingId, 'word-sync');
+    await deleteDerivation(meetingId, 'speaker-names');
     setTranscript(nextTranscript);
     setSegmentMenu(null);
   }

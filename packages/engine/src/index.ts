@@ -24,3 +24,5 @@ export * from './lib/transcription-service';
 export * from './lib/diarization-service';
 export * from './lib/alignment-service';
 export * from './lib/speaker-naming-service';
+export * from './lib/memory-budget';
+export * from './lib/chat';
