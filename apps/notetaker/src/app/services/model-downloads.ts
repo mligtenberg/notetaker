@@ -167,8 +167,9 @@ export function createSuggestedModelDownloads(): DirectModelDownload[] {
             return {
               path,
               url:
-                fileConfig.sourceUrl ??
-                buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
+                fileConfig.sourceUrl !== undefined
+                  ? resolveSourceUrl(fileConfig.sourceUrl)
+                  : buildHuggingFaceDownloadUrl(sourceRepository, sourcePath),
               type: resolveModelFileType(path),
               size: fileConfig.size,
             };
@@ -293,6 +294,21 @@ function normalizeSuggestedModelFileConfig(
   file: number | SuggestedModelFileConfig,
 ): SuggestedModelFileConfig {
   return typeof file === 'number' ? { size: file } : file;
+}
+
+/**
+ * Root-relative `sourceUrl`s point at files under `public/`, which Vite
+ * serves under the configured base path rather than the domain root. GitHub
+ * Pages serves the app under `/<repo>/`, so a literal `/assets/...` string
+ * 404s there; resolve it against the app's own base URL instead.
+ */
+function resolveSourceUrl(sourceUrl: string): string {
+  if (!sourceUrl.startsWith('/')) {
+    return sourceUrl;
+  }
+
+  const base = import.meta.env.BASE_URL.replace(/\/+$/, '');
+  return `${base}/${sourceUrl.replace(/^\/+/, '')}`;
 }
 
 function buildHuggingFaceDownloadUrl(
