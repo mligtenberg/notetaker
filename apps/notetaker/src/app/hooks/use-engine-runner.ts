@@ -40,6 +40,12 @@ export function useEngineRunner({
 }: UseEngineRunnerOptions) {
   const engineWorkerRef = useRef<Worker | null>(null);
   const engineRequestIdRef = useRef(0);
+  // The worker can die outright (e.g. an out-of-memory crash from a large
+  // model/long recording) without ever posting a 'result' message back, which
+  // would otherwise leave the pending run's Promise - and the UI - hanging
+  // forever. Whichever run* call is currently in flight registers its reject
+  // here so a fatal worker error can still resolve it.
+  const pendingWorkerRejectRef = useRef<((error: Error) => void) | null>(null);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>('idle');
   const [engineMessage, setEngineMessage] = useState(
     'Select a meeting and run the engine.',
@@ -78,11 +84,21 @@ export function useEngineRunner({
         appendEngineLog(
           `[worker] error ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`,
         );
+        pendingWorkerRejectRef.current?.(
+          new Error(
+            'Model worker crashed unexpectedly (often an out-of-memory crash from a large model or long recording). Try a smaller/quantized model or a shorter recording.',
+          ),
+        );
+        pendingWorkerRejectRef.current = null;
       });
       worker.addEventListener('messageerror', () => {
         appendEngineLog(
           '[worker] messageerror while transferring request/response.',
         );
+        pendingWorkerRejectRef.current?.(
+          new Error('Lost the request/response to the model worker mid-transfer.'),
+        );
+        pendingWorkerRejectRef.current = null;
       });
       engineWorkerRef.current = worker;
     }
@@ -182,6 +198,7 @@ export function useEngineRunner({
           if (msg.type !== 'result') return;
 
           worker.removeEventListener('message', handleMessage);
+          pendingWorkerRejectRef.current = null;
 
           if (msg.ok) {
             if (msg.mode !== 'transcription') {
@@ -197,6 +214,7 @@ export function useEngineRunner({
         };
 
         worker.addEventListener('message', handleMessage);
+        pendingWorkerRejectRef.current = reject;
         const request: EngineWorkerRequest = {
           id: requestId,
           mode: 'transcription',
@@ -292,6 +310,7 @@ export function useEngineRunner({
           if (msg.type !== 'result') return;
 
           worker.removeEventListener('message', handleMessage);
+          pendingWorkerRejectRef.current = null;
 
           if (msg.ok) {
             if (msg.mode !== 'diarization') {
@@ -306,6 +325,7 @@ export function useEngineRunner({
         };
 
         worker.addEventListener('message', handleMessage);
+        pendingWorkerRejectRef.current = reject;
         const request: EngineWorkerRequest = {
           id: requestId,
           mode: 'diarization',
@@ -400,6 +420,7 @@ export function useEngineRunner({
           if (handleWorkerUpdate(msg)) return;
           if (msg.type !== 'result') return;
           worker.removeEventListener('message', handleMessage);
+          pendingWorkerRejectRef.current = null;
           if (msg.ok) {
             if (msg.mode !== 'word-sync') {
               reject(new Error('Worker returned an unexpected result.'));
@@ -412,6 +433,7 @@ export function useEngineRunner({
         };
 
         worker.addEventListener('message', handleMessage);
+        pendingWorkerRejectRef.current = reject;
         const request: EngineWorkerRequest = {
           id: requestId,
           mode: 'word-sync',
@@ -498,6 +520,7 @@ export function useEngineRunner({
             if (handleWorkerUpdate(msg)) return;
             if (msg.type !== 'result') return;
             worker.removeEventListener('message', handleMessage);
+            pendingWorkerRejectRef.current = null;
             if (msg.ok) {
               if (msg.mode !== 'speaker-naming') {
                 reject(new Error('Worker returned an unexpected result.'));
@@ -510,6 +533,7 @@ export function useEngineRunner({
           };
 
           worker.addEventListener('message', handleMessage);
+          pendingWorkerRejectRef.current = reject;
           const request: EngineWorkerRequest = {
             id: requestId,
             mode: 'speaker-naming',

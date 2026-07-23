@@ -1,5 +1,7 @@
 import {
   type ManagedModel,
+  type ModelFileManifestEntry,
+  type ModelManager,
   type ModelVersionManifestEntry,
 } from '@notetaker/model-manager';
 import {
@@ -248,10 +250,23 @@ export function getModelVersions(
   return versions.filter((version) => version.model === model);
 }
 
-export async function downloadBlobWithProgress(
+/**
+ * Downloads a single model file straight into OPFS, piping the network
+ * response to disk as it arrives instead of buffering it into one Blob in
+ * memory first. A model file can be gigabytes (Gemma's external-data
+ * files, the Dutch wav2vec2 checkpoint); holding one of those as a single
+ * in-memory Blob before it's ever written is what caused OOM crashes on
+ * download. Streaming keeps the resident footprint down to whatever chunk
+ * size the network hands over — normally well under a megabyte — rather
+ * than a fixed 100MB (or the file's full size).
+ */
+export async function downloadFileToVersion(
+  modelManager: ModelManager,
+  model: ManagedModel,
+  version: string,
   file: DirectModelFile,
   onProgress: (loadedBytes: number, totalBytes: number | null) => void,
-): Promise<Blob> {
+): Promise<ModelFileManifestEntry> {
   const response = await fetch(file.url);
 
   if (!response.ok) {
@@ -262,32 +277,45 @@ export async function downloadBlobWithProgress(
 
   const totalBytes = Number(response.headers.get('content-length'));
   const normalizedTotalBytes = Number.isFinite(totalBytes) ? totalBytes : null;
+  const writable = await modelManager.openVersionFileWritable(
+    model,
+    version,
+    file.path,
+  );
 
-  if (response.body === null) {
-    const blob = await response.blob();
-    onProgress(blob.size, normalizedTotalBytes ?? blob.size);
-    return blob;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: BlobPart[] = [];
   let loadedBytes = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
+  try {
+    if (response.body === null) {
+      const blob = await response.blob();
+      await writable.write(blob);
+      await writable.close();
+      loadedBytes = blob.size;
+      onProgress(loadedBytes, normalizedTotalBytes ?? loadedBytes);
+    } else {
+      const reportProgress = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          loadedBytes += chunk.byteLength;
+          onProgress(loadedBytes, normalizedTotalBytes);
+          controller.enqueue(chunk);
+        },
+      });
 
-    if (done) {
-      break;
+      // pipeTo closes `writable` on success and aborts it on failure, so
+      // there's no separate close()/abort() to call for this branch.
+      await response.body.pipeThrough(reportProgress).pipeTo(writable);
     }
-
-    chunks.push(
-      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
-    );
-    loadedBytes += value.byteLength;
-    onProgress(loadedBytes, normalizedTotalBytes);
+  } catch (error) {
+    await writable.abort().catch(() => undefined);
+    throw error;
   }
 
-  return new Blob(chunks, { type: file.type });
+  return {
+    path: file.path,
+    size: loadedBytes,
+    type: file.type,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function normalizeSuggestedModelFileConfig(

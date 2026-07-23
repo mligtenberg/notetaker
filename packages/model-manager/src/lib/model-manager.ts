@@ -129,6 +129,40 @@ export class ModelManager {
   }
 
   /**
+   * Opens a writable for a single model file without requiring its full
+   * content up front. Lets a caller pipe a fetch response's body straight to
+   * disk in whatever chunk sizes the network hands over, so even a
+   * multi-gigabyte file never needs to be held in memory as one Blob.
+   */
+  async openVersionFileWritable(
+    model: ManagedModel,
+    version: string,
+    path: string,
+  ): Promise<FileSystemWritableFileStream> {
+    this.#assertValidModel(model);
+    this.#assertSafePathPart(version, 'version');
+
+    const pathParts = this.#resolveFilePath(path);
+    const fileName = pathParts.at(-1);
+
+    if (fileName === undefined) {
+      throw new Error('Model file path must include a file name.');
+    }
+
+    const modelDirectory = await this.#getModelDirectory(model);
+    let directory = await modelDirectory.getDirectoryHandle(version, {
+      create: true,
+    });
+
+    for (const directoryName of pathParts.slice(0, -1)) {
+      directory = await directory.getDirectoryHandle(directoryName, { create: true });
+    }
+
+    const fileHandle = await directory.getFileHandle(fileName, { create: true });
+    return fileHandle.createWritable();
+  }
+
+  /**
    * Records manifest metadata for a version whose files were already written
    * via {@link writeVersionFile}. Split from {@link addVersion} so large
    * downloads can write files incrementally and finalize once at the end.

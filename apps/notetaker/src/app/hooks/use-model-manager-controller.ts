@@ -7,7 +7,7 @@ import {
 } from '@notetaker/model-manager';
 import type { DownloadProgressState } from '../app.types';
 import {
-  downloadBlobWithProgress,
+  downloadFileToVersion,
   getDirectDownloadVersion as findDirectDownloadVersion,
   getKnownDownloadSize,
   getModelVersionTitle,
@@ -192,7 +192,10 @@ export function useModelManagerController() {
           status: 'downloading',
         });
 
-        const blob = await downloadBlobWithProgress(
+        const fileEntry = await downloadFileToVersion(
+          modelManager,
+          download.model,
+          version,
           file,
           (loadedBytes, fileTotalBytes) => {
             const fallbackTotalBytes =
@@ -209,15 +212,8 @@ export function useModelManagerController() {
           },
         );
 
-        completedBytes += blob.size;
-
-        fileEntries.push(
-          await modelManager.writeVersionFile(download.model, version, {
-            path: file.path,
-            data: blob,
-            type: file.type,
-          }),
-        );
+        completedBytes += fileEntry.size;
+        fileEntries.push(fileEntry);
       }
 
       setDownloadProgress((currentProgress) =>
