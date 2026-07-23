@@ -42,6 +42,9 @@ export function DownloadProgressDialog({
           : formatBytes(progress.totalBytes)}
         {percent === null ? '' : ` (${percent}%)`}
       </p>
+      {progress.status === 'error' && progress.errorMessage ? (
+        <p className={styles.message}>{progress.errorMessage}</p>
+      ) : null}
     </Dialog>
   );
 }

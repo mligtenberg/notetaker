@@ -16,4 +16,5 @@ export interface DownloadProgressState {
   loadedBytes: number;
   totalBytes: number | null;
   status: 'downloading' | 'saving' | 'complete' | 'error';
+  errorMessage?: string;
 }

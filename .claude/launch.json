@@ -4,8 +4,8 @@
     {
       "name": "notetaker",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["nx", "serve", "notetaker"],
-      "port": 4200
+      "runtimeArgs": ["nx", "serve", "@notetaker/app", "--port", "4300"],
+      "port": 4300
     }
   ]
 }

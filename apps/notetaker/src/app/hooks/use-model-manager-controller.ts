@@ -160,14 +160,27 @@ export function useModelManagerController() {
       return;
     }
 
+    const modelName = getQuantizedVersionName(
+      download.id.replaceAll('/', '__'),
+      download.quantization,
+    );
+    const version = `${modelName}--direct--${new Date()
+      .toISOString()
+      .replaceAll(':', '-')}`;
+
     try {
       setDownloadingModel(download.model);
       setModelMessage(`Downloading ${download.label} from ${download.id}...`);
 
-      const files = [];
       const knownTotalBytes = getKnownDownloadSize(download);
       let completedBytes = 0;
+      const fileEntries = [];
 
+      // Each file is written to OPFS as soon as it downloads, instead of
+      // holding every Blob in memory until the last one arrives — Gemma's
+      // ~3.5 GB payload otherwise peaks at the full model size resident in
+      // the tab and the final OPFS write fails silently under the memory
+      // pressure.
       for (const [index, file] of download.files.entries()) {
         setDownloadProgress({
           title: `Downloading ${download.label}`,
@@ -198,20 +211,14 @@ export function useModelManagerController() {
 
         completedBytes += blob.size;
 
-        files.push({
-          path: file.path,
-          data: blob,
-          type: file.type,
-        });
+        fileEntries.push(
+          await modelManager.writeVersionFile(download.model, version, {
+            path: file.path,
+            data: blob,
+            type: file.type,
+          }),
+        );
       }
-
-      const modelName = getQuantizedVersionName(
-        download.id.replaceAll('/', '__'),
-        download.quantization,
-      );
-      const version = `${modelName}--direct--${new Date()
-        .toISOString()
-        .replaceAll(':', '-')}`;
 
       setDownloadProgress((currentProgress) =>
         currentProgress === null
@@ -220,7 +227,7 @@ export function useModelManagerController() {
       );
 
       const isLanguageAware = download.model === 'text-audio-sync';
-      await modelManager.addVersion({
+      await modelManager.finalizeVersion({
         model: download.model,
         modelName,
         version,
@@ -228,7 +235,7 @@ export function useModelManagerController() {
         activate: true,
         languageCodes: download.languageCodes,
         activateForLanguages: isLanguageAware ? download.languageCodes : undefined,
-        files,
+        fileEntries,
         metadata: {
           title: download.label,
           format: download.model === 'language' ? 'direct-hugging-face' : 'onnx',
@@ -247,16 +254,19 @@ export function useModelManagerController() {
       );
       setModelMessage(`Downloaded and activated ${download.label}.`);
     } catch (error) {
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : `Failed to download ${download.label}.`;
+
+      await modelManager.removeVersion(download.model, version).catch(() => undefined);
+
       setDownloadProgress((currentProgress) =>
         currentProgress === null
           ? null
-          : { ...currentProgress, status: 'error' },
+          : { ...currentProgress, status: 'error', errorMessage },
       );
-      setModelMessage(
-        error instanceof Error
-          ? error.message
-          : `Failed to download ${download.label}.`,
-      );
+      setModelMessage(errorMessage);
     } finally {
       setDownloadingModel(null);
     }

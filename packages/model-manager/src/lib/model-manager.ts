@@ -91,25 +91,63 @@ export class ModelManager {
   }
 
   async addVersion(options: AddModelVersionOptions): Promise<ModelVersionManifestEntry> {
-    this.#assertValidModel(options.model);
-    this.#assertSafePathPart(options.version, 'version');
-
     if (options.files.length === 0) {
       throw new Error('Model version requires at least one file.');
     }
 
-    const manifest = await this.#readManifest();
-    const modelDirectory = await this.#getModelDirectory(options.model);
-    const versionDirectory = await modelDirectory.getDirectoryHandle(options.version, {
-      create: true,
-    });
     const now = new Date().toISOString();
     const fileEntries: ModelFileManifestEntry[] = [];
 
     for (const file of options.files) {
-      fileEntries.push(await this.#writeModelFile(versionDirectory, file, now));
+      fileEntries.push(await this.writeVersionFile(options.model, options.version, file, now));
     }
 
+    return this.finalizeVersion({ ...options, fileEntries });
+  }
+
+  /**
+   * Writes a single model file to a version's directory (creating it on first
+   * call) without touching the manifest. Lets callers stream a large model in
+   * one file at a time instead of holding every file's Blob in memory before
+   * any of it reaches disk.
+   */
+  async writeVersionFile(
+    model: ManagedModel,
+    version: string,
+    file: ModelVersionFile,
+    updatedAt: string = new Date().toISOString(),
+  ): Promise<ModelFileManifestEntry> {
+    this.#assertValidModel(model);
+    this.#assertSafePathPart(version, 'version');
+
+    const modelDirectory = await this.#getModelDirectory(model);
+    const versionDirectory = await modelDirectory.getDirectoryHandle(version, {
+      create: true,
+    });
+
+    return this.#writeModelFile(versionDirectory, file, updatedAt);
+  }
+
+  /**
+   * Records manifest metadata for a version whose files were already written
+   * via {@link writeVersionFile}. Split from {@link addVersion} so large
+   * downloads can write files incrementally and finalize once at the end.
+   */
+  async finalizeVersion(
+    options: Omit<AddModelVersionOptions, 'files'> & {
+      fileEntries: ModelFileManifestEntry[];
+    },
+  ): Promise<ModelVersionManifestEntry> {
+    this.#assertValidModel(options.model);
+    this.#assertSafePathPart(options.version, 'version');
+
+    if (options.fileEntries.length === 0) {
+      throw new Error('Model version requires at least one file.');
+    }
+
+    const manifest = await this.#readManifest();
+    const now = new Date().toISOString();
+    const fileEntries = options.fileEntries;
     const existingEntry = manifest.models[options.model][options.version];
     const languageCodes =
       options.languageCodes ?? existingEntry?.languageCodes;
